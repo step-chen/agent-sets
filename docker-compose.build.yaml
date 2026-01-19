@@ -1,0 +1,39 @@
+# =============================================================================
+# Docker Compose - Build Mode
+# 包含本地构建，用于开发和 CI/CD
+# =============================================================================
+
+services:
+  pr-reviewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pr-review-automation:latest
+    container_name: pr-reviewer
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./config.yaml:/app/config/config.yaml:ro
+      - ./logs:/app/logs
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      - LOG_OUTPUT=${LOG_OUTPUT:-stdout}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - BITBUCKET_MCP_TOKEN=${BITBUCKET_MCP_TOKEN:-}
+      - JIRA_MCP_TOKEN=${JIRA_MCP_TOKEN:-}
+      - CONFLUENCE_MCP_TOKEN=${CONFLUENCE_MCP_TOKEN:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - pr-review-network
+
+networks:
+  pr-review-network:
+    driver: bridge

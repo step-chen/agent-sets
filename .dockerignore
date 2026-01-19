@@ -1,0 +1,43 @@
+# Dependencies
+go.sum
+
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+server
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docs
+README.md
+*.md
+docs/
+
+# Test files
+*_test.go
+testdata/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Local development
+.env
+.env.local
+*.local
+
+# Artifacts
+.gemini/

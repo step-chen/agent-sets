@@ -1,0 +1,44 @@
+# =============================================================================
+# PR Review Automation Configuration Template
+# =============================================================================
+
+log:
+  level: INFO # DEBUG, INFO, WARN, ERROR
+  format: text # text, json
+  output: stdout # stdout, stderr, /path/to/file
+
+server:
+  port: 8080
+  concurrency_limit: 10
+  read_timeout: 10s
+  write_timeout: 30s
+  max_body_size: 2097152
+
+llm:
+  model: gpt-4o
+  endpoint: https://api.openai.com/v1
+
+mcp:
+  retry:
+    attempts: 3
+    backoff: 1s
+    max_backoff: 30s
+
+  bitbucket:
+    endpoint: http://bitbucket-mcp:8080
+    # allowed_tools: # Optional: whitelist of tools to expose, if empty all tools are allowed
+    #   - bitbucket_get_pull_request
+    #   - bitbucket_add_pull_request_comment
+
+  jira:
+    endpoint: http://jira-mcp:8080
+    # allowed_tools:
+    #   - jira_get_issue
+
+  confluence:
+    endpoint: http://confluence-mcp:8080
+    # allowed_tools:
+    #   - confluence_search
+
+agent:
+  pr_review_prompt_name: code_review

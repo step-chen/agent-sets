@@ -1,0 +1,42 @@
+# =============================================================================
+# Docker Compose - Production Mode
+# 使用预构建镜像，用于生产部署
+# =============================================================================
+
+services:
+  pr-reviewer:
+    image: ${IMAGE_REGISTRY:-}pr-review-automation:${IMAGE_TAG:-latest}
+    container_name: pr-reviewer
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./config.yaml:/app/config/config.yaml:ro
+      - ./logs:/app/logs
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - LOG_OUTPUT=${LOG_OUTPUT:-stdout}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - BITBUCKET_MCP_TOKEN=${BITBUCKET_MCP_TOKEN:-}
+      - JIRA_MCP_TOKEN=${JIRA_MCP_TOKEN:-}
+      - CONFLUENCE_MCP_TOKEN=${CONFLUENCE_MCP_TOKEN:-}
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - pr-review-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+networks:
+  pr-review-network:
+    driver: bridge
