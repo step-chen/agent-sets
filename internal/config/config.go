@@ -24,6 +24,11 @@ type MCPServerConfig struct {
 	AllowedTools []string `yaml:"allowed_tools"` // Whitelist of tools to expose
 }
 
+// PromptsConfig holds configuration for prompt loading
+type PromptsConfig struct {
+	Dir string `yaml:"dir"` // Root directory for prompt files
+}
+
 // Config holds the configuration for the PR review automation tool
 type Config struct {
 	Log struct {
@@ -58,9 +63,7 @@ type Config struct {
 		Confluence MCPServerConfig `yaml:"confluence"`
 	} `yaml:"mcp"`
 
-	Agent struct {
-		PRReviewPromptName string `yaml:"pr_review_prompt_name"`
-	} `yaml:"agent"`
+	Prompts PromptsConfig `yaml:"prompts"`
 }
 
 // GetLogLevel returns the slog.Level based on Log.Level string
@@ -95,7 +98,7 @@ func LoadConfig() *Config {
 	cfg.MCP.Retry.Attempts = 3
 	cfg.MCP.Retry.Backoff = 1 * time.Second
 	cfg.MCP.Retry.MaxBackoff = 30 * time.Second
-	cfg.Agent.PRReviewPromptName = "code_review"
+	cfg.Prompts.Dir = "prompts"
 
 	// Try to load from YAML
 	configPath := getEnv("CONFIG_PATH", DefaultConfigPath)

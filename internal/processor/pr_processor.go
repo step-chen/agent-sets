@@ -115,7 +115,7 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 			"projectKey":    pr.ProjectKey,
 			"repoSlug":      pr.RepoSlug,
 			"pullRequestId": pullRequestId,
-			"commentText":   fmt.Sprintf("**AI Review Summary**\nScore: %d\n\n%s", review.Score, review.Summary),
+			"commentText":   fmt.Sprintf("**AI Review Summary (Model: %s)**\nScore: %d\n\n%s", review.Model, review.Score, review.Summary),
 		}
 
 		_, err := p.commenter.CallTool(ctx, "bitbucket", "bitbucket_add_pull_request_comment", args)

@@ -61,8 +61,11 @@ func main() {
 	}
 	defer mcpClient.Close()
 
+	// Initialize Prompt Loader
+	promptLoader := agent.NewPromptLoader(cfg.Prompts.Dir)
+
 	// Initialize PR review agent
-	prReviewAgent, err := agent.NewPRReviewAgent(llm, mcpClient, cfg.Agent.PRReviewPromptName)
+	prReviewAgent, err := agent.NewPRReviewAgent(llm, mcpClient, promptLoader, cfg.LLM.Model)
 	if err != nil {
 		slog.Error("init agent failed", "error", err)
 		os.Exit(1)

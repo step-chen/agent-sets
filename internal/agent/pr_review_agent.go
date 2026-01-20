@@ -13,8 +13,6 @@ import (
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
 
-	"embed"
-
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/model"
@@ -23,23 +21,13 @@ import (
 	"google.golang.org/genai"
 )
 
-//go:embed prompts/code_review.txt
-var promptFS embed.FS
-
-func loadPrompt(name string) (string, error) {
-	data, err := promptFS.ReadFile("prompts/" + name + ".txt")
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
 // PRReviewAgent represents a PR review agent powered by ADK-Go
 type PRReviewAgent struct {
 	llm            model.LLM
 	sessionService session.Service
 	mcpClient      *client.MCPClient
-	promptName     string
+	promptLoader   *PromptLoader
+	modelName      string
 }
 
 // ReviewResult represents the result of a PR review
@@ -47,6 +35,7 @@ type ReviewResult struct {
 	Comments []ReviewComment `json:"comments"`
 	Score    int             `json:"score"`
 	Summary  string          `json:"summary"`
+	Model    string          `json:"model,omitempty"`
 }
 
 // ReviewComment represents a single comment in a PR review
@@ -57,7 +46,7 @@ type ReviewComment struct {
 }
 
 // NewPRReviewAgent creates a new PR review agent factory
-func NewPRReviewAgent(llm model.LLM, mcpClient *client.MCPClient, promptName string) (*PRReviewAgent, error) {
+func NewPRReviewAgent(llm model.LLM, mcpClient *client.MCPClient, promptLoader *PromptLoader, modelName string) (*PRReviewAgent, error) {
 	// Validation of dependencies
 	if llm == nil {
 		return nil, fmt.Errorf("llm is nil")
@@ -65,12 +54,16 @@ func NewPRReviewAgent(llm model.LLM, mcpClient *client.MCPClient, promptName str
 	if mcpClient == nil {
 		return nil, fmt.Errorf("mcp client is nil")
 	}
+	if promptLoader == nil {
+		return nil, fmt.Errorf("prompt loader is nil")
+	}
 
 	return &PRReviewAgent{
 		llm:            llm,
 		sessionService: session.InMemoryService(),
 		mcpClient:      mcpClient,
-		promptName:     promptName,
+		promptLoader:   promptLoader,
+		modelName:      modelName,
 	}, nil
 }
 
@@ -95,8 +88,8 @@ func (pra *PRReviewAgent) ReviewPR(ctx context.Context, pr *domain.PullRequest) 
 		slog.Warn("no mcp toolsets available")
 	}
 
-	// 2. Load prompt
-	instruction, err := loadPrompt(pra.promptName)
+	// 2. Load prompt (project from PR, language detection TBD)
+	instruction, err := pra.promptLoader.Load(pr.ProjectKey, "default")
 	if err != nil {
 		return nil, fmt.Errorf("load prompt: %w", err)
 	}
@@ -239,6 +232,7 @@ Return your response in the following JSON format ONLY, do not include markdown 
 	metricResult = "success"
 	metrics.PullRequestTotal.WithLabelValues("success").Inc()
 
+	reviewResult.Model = pra.modelName
 	return &reviewResult, nil
 }
 
