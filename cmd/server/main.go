@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -152,29 +153,44 @@ func main() {
 
 // setupLogger creates a logger based on configuration
 func setupLogger(cfg *config.Config) *slog.Logger {
-	var w io.Writer
-	switch cfg.Log.Output {
-	case "stderr":
-		w = os.Stderr
-	case "stdout", "":
-		w = os.Stdout
-	default:
-		f, err := os.OpenFile(cfg.Log.Output, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "open log file failed: %v, using stdout\n", err)
+	var writers []io.Writer
+	outputs := strings.Split(cfg.Log.Output, ",")
+
+	for _, output := range outputs {
+		output = strings.TrimSpace(output)
+		if output == "" {
+			continue
+		}
+
+		var w io.Writer
+		switch output {
+		case "stderr":
+			w = os.Stderr
+		case "stdout":
 			w = os.Stdout
-		} else {
+		default:
+			f, err := os.OpenFile(output, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "open log file failed: %v, skipping output %s\n", err, output)
+				continue
+			}
 			w = f
 		}
+		writers = append(writers, w)
 	}
 
+	if len(writers) == 0 {
+		writers = append(writers, os.Stdout)
+	}
+
+	multiWriter := io.MultiWriter(writers...)
 	opts := &slog.HandlerOptions{Level: cfg.GetLogLevel()}
 
 	var handler slog.Handler
 	if cfg.Log.Format == "json" {
-		handler = slog.NewJSONHandler(w, opts)
+		handler = slog.NewJSONHandler(multiWriter, opts)
 	} else {
-		handler = slog.NewTextHandler(w, opts)
+		handler = slog.NewTextHandler(multiWriter, opts)
 	}
 
 	return slog.New(handler)

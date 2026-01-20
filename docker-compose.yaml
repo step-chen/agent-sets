@@ -14,8 +14,9 @@ services:
       - ./logs:/app/logs
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - LOG_FORMAT=${LOG_FORMAT:-json}
-      - LOG_OUTPUT=${LOG_OUTPUT:-stdout}
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      - LOG_OUTPUT=${LOG_OUTPUT:-stdout,/app/logs/app.log}
+      - CONFIG_PATH=${CONFIG_PATH:-/app/config/config.yaml}
       - LLM_API_KEY=${LLM_API_KEY}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
       - BITBUCKET_MCP_TOKEN=${BITBUCKET_MCP_TOKEN:-}
