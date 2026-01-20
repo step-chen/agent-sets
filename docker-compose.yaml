@@ -13,6 +13,7 @@ services:
       - ./config.yaml:/app/config/config.yaml:ro
       - ./prompts:/app/prompts:ro
       - ./logs:/app/logs
+      - ./data:/app/data
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
       - LOG_FORMAT=${LOG_FORMAT:-text}
