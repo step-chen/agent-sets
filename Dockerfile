@@ -3,6 +3,12 @@
 # =============================================================================
 FROM golang:1.25-bookworm AS builder
 
+# Add image metadata following OCI standard
+LABEL org.opencontainers.image.authors="https://github.com/step-chen" \
+    org.opencontainers.image.description="PR Review Automation - An AI-powered pull request review service built with Google ADK-Go and MCP (Model Context Protocol)" \
+    org.opencontainers.image.vendor="https://github.com/step-chen" \
+    org.opencontainers.image.source="https://github.com/step-chen/agent-sets"
+
 # Install necessary build tools (Debian uses apt)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -24,7 +30,7 @@ RUN go test ./... -v
 # Build the application
 # CGO_ENABLED=0 for static binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -extldflags '-static'" \
     -o /app/pr-review-server \
     ./cmd/server
 
@@ -72,4 +78,3 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # Run the application
 ENTRYPOINT ["/app/pr-review-server"]
-
