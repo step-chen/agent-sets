@@ -110,6 +110,19 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 
+	// Add root path handler to catch misconfiguration (e.g. omitted /webhook in URL)
+	// It logs a helpful warning but still returns 404 to be semantically correct.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			slog.Warn("received request at root path",
+				"path", r.URL.Path,
+				"method", r.Method,
+				"msg", "please configure webhook URL to path '/webhook'",
+			)
+		}
+		http.NotFound(w, r)
+	})
+
 	// Prometheus Metrics Endpoint
 	mux.Handle("/metrics", promhttp.Handler())
 
