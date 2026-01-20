@@ -235,6 +235,7 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L2(t *testing.T) {
 	// Payload with completely unknown structure that L1 fails to parse all required fields
 	// L1 needs ID, ProjectKey to consider "Valid" (actually IsValid checks ID, ProjectKey, RepoSlug)
 	jsonBody := `{
+		"eventKey": "pr:opened",
 		"weirdEvent": "pr:weird",
 		"data": {
 			"meta": { "identifier": 999 },
