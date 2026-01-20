@@ -27,6 +27,24 @@ func (a *OpenAIAdapter) Name() string {
 	return "openai-" + a.model
 }
 
+// Ping sends a minimal request to verify connection
+func (a *OpenAIAdapter) Ping(ctx context.Context) error {
+	slog.Info("checking llm connection...")
+	params := openai.ChatCompletionNewParams{
+		Model: shared.ChatModel(a.model),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("hello"),
+		},
+		MaxTokens: openai.Int(1),
+	}
+	_, err := a.client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		return fmt.Errorf("llm ping failed: %w", err)
+	}
+	slog.Info("llm connection verified")
+	return nil
+}
+
 // GenerateContent generates content using OpenAI
 func (a *OpenAIAdapter) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {

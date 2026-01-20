@@ -44,7 +44,7 @@ type Config struct {
 	LLM struct {
 		Model    string `yaml:"model"`
 		Endpoint string `yaml:"endpoint"`
-		APIKey   string `yaml:"-"` // From Env
+		APIKey   string `yaml:"api_key"` // From YAML or Env
 	} `yaml:"llm"`
 
 	MCP struct {

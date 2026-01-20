@@ -46,6 +46,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Verify LLM connection
+	if checker, ok := llm.(interface{ Ping(context.Context) error }); ok {
+		if err := checker.Ping(context.Background()); err != nil {
+			slog.Error("llm health check failed", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	// Create a context for initialization
 	if err := mcpClient.InitializeConnections(); err != nil {
 		slog.Error("init mcp failed", "error", err)

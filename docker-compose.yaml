@@ -5,7 +5,7 @@
 
 services:
   pr-reviewer:
-    image: ${IMAGE_REGISTRY:-}pr-review-automation:${IMAGE_TAG:-latest}
+    image: ghcr.io/step-chen/agent-sets:latest
     container_name: pr-reviewer
     ports:
       - "${PORT:-8080}:8080"
@@ -13,7 +13,7 @@ services:
       - ./config.yaml:/app/config/config.yaml:ro
       - ./logs:/app/logs
     environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
       - LOG_FORMAT=${LOG_FORMAT:-text}
       - LOG_OUTPUT=${LOG_OUTPUT:-stdout,/app/logs/app.log}
       - CONFIG_PATH=${CONFIG_PATH:-/app/config/config.yaml}
