@@ -12,6 +12,9 @@ import (
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
+	"pr-review-automation/internal/types"
+
+	"github.com/tidwall/gjson"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
@@ -36,6 +39,14 @@ type ReviewResult struct {
 	Score    int             `json:"score"`
 	Summary  string          `json:"summary"`
 	Model    string          `json:"model,omitempty"`
+}
+
+// ReviewRequest represents a PR review request with deduplication context.
+// HistoricalComments are fetched from Bitbucket and injected into the prompt
+// to enable LLM-driven deduplication.
+type ReviewRequest struct {
+	PR                 *domain.PullRequest
+	HistoricalComments []ReviewComment // Existing AI comments from Bitbucket
 }
 
 // ReviewComment represents a single comment in a PR review
@@ -68,7 +79,8 @@ func NewPRReviewAgent(llm model.LLM, mcpClient *client.MCPClient, promptLoader *
 }
 
 // ReviewPR processes a pull request using a fresh ADK agent instance
-func (pra *PRReviewAgent) ReviewPR(ctx context.Context, pr *domain.PullRequest) (*ReviewResult, error) {
+func (pra *PRReviewAgent) ReviewPR(ctx context.Context, req *ReviewRequest) (*ReviewResult, error) {
+	pr := req.PR // convenience
 	start := time.Now()
 	metricResult := "error" // Default to error, changed to success on success path
 	defer func() {
@@ -89,7 +101,14 @@ func (pra *PRReviewAgent) ReviewPR(ctx context.Context, pr *domain.PullRequest) 
 	}
 
 	// 2. Load prompt (project from PR, language detection TBD)
-	instruction, err := pra.promptLoader.Load(pr.ProjectKey, "default")
+	// 2. Load prompt (project from PR, language detection)
+	// Detect primary language from changed files
+	language := "default"
+	if changedFiles := pra.fetchChangedFiles(ctx, pr); len(changedFiles) > 0 {
+		language = DetectLanguage(changedFiles)
+		slog.Debug("detected language", "language", language, "files", len(changedFiles))
+	}
+	instruction, err := pra.promptLoader.Load(pr.ProjectKey, language)
 	if err != nil {
 		return nil, fmt.Errorf("load prompt: %w", err)
 	}
@@ -111,7 +130,8 @@ func (pra *PRReviewAgent) ReviewPR(ctx context.Context, pr *domain.PullRequest) 
 	slog.Debug("agent created", "toolsets", len(toolsets))
 
 	// Convert PR info to a prompt
-	prompt := fmt.Sprintf(`Please review the following pull request:
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf(`Please review the following pull request:
 
 Repository: %v
 Pull Request ID: %v
@@ -119,7 +139,26 @@ Title: %v
 Description: %v
 Author: %v
 
-Analyze the changes and provide feedback on code quality, potential bugs, and adherence to best practices. 
+`,
+		pr.RepoSlug,
+		pr.ID,
+		pr.Title,
+		pr.Description,
+		pr.Author,
+	))
+
+	// Inject historical comments for deduplication
+	if len(req.HistoricalComments) > 0 {
+		sb.WriteString("## Existing AI Comments (DO NOT DUPLICATE)\n")
+		sb.WriteString("The following comments were already posted by previous AI reviews. **DO NOT** duplicate these issues.\n")
+		sb.WriteString("If an issue is listed below, assume it is already known. Only report NEW issues or if you verify the issue is fixed (mention repair in summary).\n\n")
+		for _, c := range req.HistoricalComments {
+			sb.WriteString(fmt.Sprintf("- [%s:%d] %s\n", c.File, c.Line, c.Comment))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(`Analyze the changes and provide feedback on code quality, potential bugs, and adherence to best practices. 
 You MUST use the provided tools to fetch the changed files and their diffs/content to perform the review. 
 Do not guess the content. 
 Also check if the changes align with any related Jira issues and follow Confluence documentation standards. 
@@ -135,13 +174,9 @@ Return your response in the following JSON format ONLY, do not include markdown 
   ],
   "score": 85,
   "summary": "Overall assessment of the pull request"
-}`,
-		pr.RepoSlug,
-		pr.ID,
-		pr.Title,
-		pr.Description,
-		pr.Author,
-	)
+}`)
+
+	prompt := sb.String()
 
 	// Create a runner
 	r, err := runner.New(runner.Config{
@@ -172,6 +207,8 @@ Return your response in the following JSON format ONLY, do not include markdown 
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := pra.sessionService.Delete(cleanupCtx, &session.DeleteRequest{
+			AppName:   "pr-review",
+			UserID:    "automation-user",
 			SessionID: sessionID,
 		}); err != nil {
 			// Log as Error (not Warn) since failed cleanup leads to memory leak
@@ -214,10 +251,7 @@ Return your response in the following JSON format ONLY, do not include markdown 
 	}
 
 	// Clean up markdown code blocks if present
-	finalText = strings.TrimPrefix(finalText, "```json")
-	finalText = strings.TrimPrefix(finalText, "```")
-	finalText = strings.TrimSuffix(finalText, "```")
-	finalText = strings.TrimSpace(finalText)
+	finalText = types.CleanJSONFromMarkdown(finalText)
 
 	var reviewResult ReviewResult
 	if err := json.Unmarshal([]byte(finalText), &reviewResult); err != nil {
@@ -234,6 +268,31 @@ Return your response in the following JSON format ONLY, do not include markdown 
 
 	reviewResult.Model = pra.modelName
 	return &reviewResult, nil
+}
+
+// fetchChangedFiles retrieves the list of changed file paths from the PR.
+// Returns empty slice on error (falls back to default language).
+func (pra *PRReviewAgent) fetchChangedFiles(ctx context.Context, pr *domain.PullRequest) []string {
+	result, err := pra.mcpClient.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_changes", map[string]interface{}{
+		"projectKey":    pr.ProjectKey,
+		"repoSlug":      pr.RepoSlug,
+		"pullRequestId": pr.ID,
+	})
+	if err != nil {
+		slog.Debug("fetch changed files failed", "error", err)
+		return nil
+	}
+
+	// Parse result to extract file paths
+	// Result structure: { "values": [{ "path": { "name": "foo.go" } }, ...] }
+	// Use gjson for safe extraction
+	jsonStr, _ := json.Marshal(result)
+	var files []string
+	gjson.GetBytes(jsonStr, "values.#.path.name").ForEach(func(_, v gjson.Result) bool {
+		files = append(files, v.String())
+		return true
+	})
+	return files
 }
 
 // jsonLLM is a wrapper around model.LLM that invalidates JSON mode

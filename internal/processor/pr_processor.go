@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -10,8 +11,10 @@ import (
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/storage"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -22,7 +25,7 @@ type Processor interface {
 
 // Reviewer defines the interface for reviewing pull requests
 type Reviewer interface {
-	ReviewPR(ctx context.Context, pr *domain.PullRequest) (*agent.ReviewResult, error)
+	ReviewPR(ctx context.Context, req *agent.ReviewRequest) (*agent.ReviewResult, error)
 }
 
 // Commenter defines the interface for posting comments
@@ -54,30 +57,50 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 
 	metrics.PullRequestTotal.WithLabelValues("started").Inc()
 
-	// Use the agent to review the PR
+	metrics.PullRequestTotal.WithLabelValues("started").Inc()
 
-	review, err := p.reviewer.ReviewPR(ctx, pr)
+	// 1. Fetch Existing AI Comments (Bitbucket Native Dedup)
+	existingComments := p.fetchExistingAIComments(ctx, pr)
+
+	// 2. Build Review Request
+	req := &agent.ReviewRequest{
+		PR:                 pr,
+		HistoricalComments: existingComments,
+	}
+
+	// 3. Review PR
+	review, err := p.reviewer.ReviewPR(ctx, req)
 	if err != nil {
 		metrics.PullRequestTotal.WithLabelValues("failed").Inc()
 		return fmt.Errorf("review pr: %w", err)
 	}
 
-	// Persist review result
+	// 4. Filter Duplicates (Semantic Dedup)
+	newComments := p.filterDuplicates(review.Comments, existingComments)
+	slog.Info("deduplication result",
+		"original_count", len(review.Comments),
+		"filtered_count", len(newComments),
+		"existing_count", len(existingComments))
+	review.Comments = newComments
+
+	// Persist review result (Audit Only)
 	if p.storage != nil {
-		record := &storage.ReviewRecord{
-			ID:          fmt.Sprintf("%s-%s-%s-%d", pr.ProjectKey, pr.RepoSlug, pr.ID, time.Now().UnixNano()),
-			PullRequest: pr,
-			Result:      review,
-			CreatedAt:   time.Now(),
-			DurationMs:  time.Since(start).Milliseconds(),
-			Status:      "success",
-		}
-		if err := p.storage.SaveReview(ctx, record); err != nil {
-			slog.Error("save review failed", "error", err)
-			// Non-blocking: continue even if storage fails
-		} else {
-			slog.Debug("review saved", "id", record.ID)
-		}
+		// Async save to not block main flow
+		go func() {
+			saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			record := &storage.ReviewRecord{
+				ID:          fmt.Sprintf("%s-%s-%s-%d", pr.ProjectKey, pr.RepoSlug, pr.ID, time.Now().UnixNano()),
+				PullRequest: pr,
+				Result:      review,
+				CreatedAt:   time.Now(),
+				DurationMs:  time.Since(start).Milliseconds(),
+				Status:      "success",
+			}
+			if err := p.storage.SaveReview(saveCtx, record); err != nil {
+				slog.Warn("audit save failed", "error", err)
+			}
+		}()
 	}
 
 	slog.Info("posting comments", "count", len(review.Comments))
@@ -102,7 +125,7 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 				"projectKey":    pr.ProjectKey,
 				"repoSlug":      pr.RepoSlug,
 				"pullRequestId": pullRequestId,
-				"commentText":   comment.Comment,
+				"commentText":   fmt.Sprintf("<!-- ai-review:%s:%d -->\n%s", comment.File, comment.Line, comment.Comment),
 			}
 
 			if comment.File != "" {
@@ -152,4 +175,109 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 	}
 
 	return nil
+}
+
+// fetchExistingAIComments fetches existing comments from Bitbucket and filters for AI comments
+func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.PullRequest) []agent.ReviewComment {
+	// Call bitbucket_get_pull_request_comments
+	result, err := p.commenter.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_comments", map[string]interface{}{
+		"projectKey":    pr.ProjectKey,
+		"repoSlug":      pr.RepoSlug,
+		"pullRequestId": pr.ID,
+	})
+	if err != nil {
+		slog.Warn("fetch existing comments failed", "error", err)
+		return nil
+	}
+
+	// Marshaling result to JSON to parse with gjson
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		slog.Warn("marshal comments failed", "error", err)
+		return nil
+	}
+	jsonStr := string(jsonBytes)
+
+	var comments []agent.ReviewComment
+
+	// Parse using gjson
+	// Assuming structure: { "values": [ { "content": { "raw": "..." }, "inline": { "path": "...", "from": 123 } } ] }
+	gjson.Get(jsonStr, "values").ForEach(func(key, value gjson.Result) bool {
+		rawContent := value.Get("content.raw").String()
+
+		// Check for AI marker
+		if strings.Contains(rawContent, "<!-- ai-review:") || strings.Contains(rawContent, "**AI Review**") {
+			path := value.Get("inline.path").String()
+			// 'to' is usually the line number in PR diffs for added/modified lines in Bitbucket
+			line := int(value.Get("inline.to").Int())
+
+			// If path/line not in inline (e.g. general comment), try to parse from marker
+			if path == "" {
+				// Parse from marker: <!-- ai-review:file:line -->
+				if start := strings.Index(rawContent, "<!-- ai-review:"); start != -1 {
+					end := strings.Index(rawContent[start:], "-->")
+					if end != -1 {
+						marker := rawContent[start : start+end]
+						parts := strings.Split(marker, ":")
+						if len(parts) >= 3 {
+							path = parts[1]
+							if l, err := strconv.Atoi(parts[2]); err == nil {
+								line = l
+							}
+						}
+					}
+				}
+			}
+
+			// Clean comment content (remove marker)
+			cleanComment := rawContent
+			// Remove HTML comments
+			if idx := strings.Index(cleanComment, "-->"); idx != -1 {
+				cleanComment = strings.TrimSpace(cleanComment[idx+3:])
+			}
+
+			if path != "" {
+				comments = append(comments, agent.ReviewComment{
+					File:    path,
+					Line:    line,
+					Comment: cleanComment,
+				})
+			}
+		}
+		return true // keep iterating
+	})
+
+	return comments
+}
+
+// filterDuplicates filters out comments that have already been made
+func (p *PRProcessor) filterDuplicates(newComments, existingComments []agent.ReviewComment) []agent.ReviewComment {
+	if len(existingComments) == 0 {
+		return newComments
+	}
+
+	existingSet := make(map[string]bool)
+	for _, c := range existingComments {
+		fp := p.semanticFingerprint(c)
+		existingSet[fp] = true
+	}
+
+	var filtered []agent.ReviewComment
+	for _, c := range newComments {
+		if !existingSet[p.semanticFingerprint(c)] {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
+}
+
+// semanticFingerprint creates a fingerprint for a comment based on file and content keywords
+func (p *PRProcessor) semanticFingerprint(c agent.ReviewComment) string {
+	// Simple fingerprint: file + first 50 chars of comment (lowercase)
+	// This avoids line number dependency
+	content := strings.ToLower(strings.TrimSpace(c.Comment))
+	if len(content) > 50 {
+		content = content[:50]
+	}
+	return fmt.Sprintf("%s:%s", c.File, content)
 }

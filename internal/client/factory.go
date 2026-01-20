@@ -1,8 +1,6 @@
 package client
 
 import (
-	"context"
-
 	"pr-review-automation/internal/config"
 
 	"github.com/openai/openai-go"
@@ -14,7 +12,7 @@ import (
 // IMPORTANT: The returned LLM instance is safe for concurrent use from multiple goroutines,
 // as long as its configuration (API key, endpoint) is NOT modified after creation.
 // This is the standard practice for http.Client based libraries.
-func NewLLM(ctx context.Context, cfg *config.Config) (model.LLM, error) {
+func NewLLM(cfg *config.Config) (model.LLM, error) {
 	client := openai.NewClient(
 		option.WithAPIKey(cfg.LLM.APIKey),
 		option.WithBaseURL(cfg.LLM.Endpoint),

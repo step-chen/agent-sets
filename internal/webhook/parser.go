@@ -3,14 +3,15 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
+	"pr-review-automation/internal/types"
 
 	"github.com/tidwall/gjson"
 	"google.golang.org/adk/model"
@@ -170,7 +171,7 @@ func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*doma
 		respText, err := querier.SimpleTextQuery(ctx, sysPrompt, truncated)
 		if err == nil {
 			// Clean up response (sometimes LLMs include markdown blocks)
-			respText = cleanJSON(respText)
+			respText = types.CleanJSONFromMarkdown(respText)
 
 			var pr domain.PullRequest
 			if err := json.Unmarshal([]byte(respText), &pr); err != nil {
@@ -251,24 +252,21 @@ func prune(v interface{}, depth int) {
 	}
 }
 
-func cleanJSON(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	return strings.TrimSpace(s)
-}
-
 func (p *PayloadParser) isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "ctx_canceled") ||
-		strings.Contains(errStr, "429") ||
-		strings.Contains(errStr, "502") ||
-		strings.Contains(errStr, "503") ||
-		strings.Contains(errStr, "504")
+
+	// Check for explicit RetryableError (from adapter)
+	var retryErr *types.RetryableError
+	if errors.As(err, &retryErr) {
+		return true
+	}
+
+	// Check for standard context errors
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+
+	return false
 }

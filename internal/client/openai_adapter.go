@@ -3,9 +3,11 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
+	"pr-review-automation/internal/types"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -97,7 +99,7 @@ func (a *OpenAIAdapter) GenerateContent(ctx context.Context, req *model.LLMReque
 func (a *OpenAIAdapter) handleUnary(ctx context.Context, params openai.ChatCompletionNewParams, yield func(*model.LLMResponse, error) bool) {
 	resp, err := a.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		yield(nil, fmt.Errorf("openai request: %w", err))
+		yield(nil, a.wrapError(fmt.Errorf("openai request: %w", err)))
 		return
 	}
 
@@ -154,7 +156,7 @@ func (a *OpenAIAdapter) handleStream(ctx context.Context, params openai.ChatComp
 	}
 
 	if err := stream.Err(); err != nil {
-		yield(nil, fmt.Errorf("stream: %w", err))
+		yield(nil, a.wrapError(fmt.Errorf("stream: %w", err)))
 		return
 	}
 
@@ -387,7 +389,7 @@ func (a *OpenAIAdapter) SimpleTextQuery(ctx context.Context, systemPrompt, userI
 
 	resp, err := a.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return "", fmt.Errorf("openai simple request: %w", err)
+		return "", a.wrapError(fmt.Errorf("openai simple request: %w", err))
 	}
 
 	if len(resp.Choices) == 0 {
@@ -395,4 +397,23 @@ func (a *OpenAIAdapter) SimpleTextQuery(ctx context.Context, systemPrompt, userI
 	}
 
 	return resp.Choices[0].Message.Content, nil
+}
+
+// wrapError wraps openai errors into RetryableError if applicable
+func (a *OpenAIAdapter) wrapError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// Check for openai.APIError
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) {
+		statusCode := apiErr.StatusCode
+		// 429 (Rate Limit) and 5xx (Server Errors) are retryable
+		if statusCode == 429 || (statusCode >= 500 && statusCode < 600) {
+			return types.NewRetryableError(err)
+		}
+	}
+
+	return err
 }

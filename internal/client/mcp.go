@@ -11,6 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/adk/agent"
+	"google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/mcptoolset"
 	"google.golang.org/genai"
@@ -353,72 +354,35 @@ func (c *MCPClient) forceReconnect(name string) {
 
 // CallTool calls a tool on a specific MCP server with retry logic
 func (c *MCPClient) CallTool(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
-	maxAttempts := c.cfg.MCP.Retry.Attempts
-	if maxAttempts <= 0 {
-		maxAttempts = 1
-	}
-
-	var lastErr error
-
 	slog.Debug("call tool", "server", serverName, "tool", toolName)
 
-	for attempt := range maxAttempts {
-		// 1. Get Toolset
-		ts, err := c.getOrReconnect(serverName)
-		if err != nil {
-			lastErr = err
-		} else {
-			// 2. Find and Call Tool
-			// Use NopToolContext to satisfy interface
-			tCtx := types.NewNopToolContext(ctx, "", "")
-
-			// We need a way to find the tool. mcptoolset.Tools(ctx) usually fetches from server.
-			// This might be slightly inefficient if we do it every time, but it ensures freshness.
-			// Ideally we cache this, but for "Robustness" we fetch.
-			tools, err := ts.Tools(tCtx)
-			if err != nil {
-				lastErr = fmt.Errorf("list tools: %w", err)
-			} else {
-				var targetTool tool.Tool
-				for _, t := range tools {
-					if t.Name() == toolName {
-						targetTool = t
-						break
-					}
-				}
-
-				if targetTool == nil {
-					lastErr = fmt.Errorf("tool %s not found", toolName)
-				} else {
-					if runnable, ok := targetTool.(RunnableTool); ok {
-						result, err := runnable.Run(tCtx, args)
-						if err == nil {
-							slog.Debug("call tool ok", "server", serverName, "tool", toolName)
-							return result, nil
-						}
-						lastErr = err
-						slog.Debug("call failed, retrying",
-							"server", serverName,
-							"tool", toolName,
-							"attempt", attempt+1,
-							"error", err)
-					} else {
-						lastErr = fmt.Errorf("tool %s is not runnable", toolName)
-					}
-				}
-			}
-		}
-
-		if attempt == maxAttempts-1 {
-			break
-		}
-
-		// 3. Retry Logic: Reconnect
-		c.forceReconnect(serverName)
-		c.backoff(ctx, attempt)
+	// Get initial toolset
+	ts, err := c.getOrReconnect(serverName)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("call %s/%s: %d retries exhausted: %w", serverName, toolName, maxAttempts, lastErr)
+	// Find tool
+	tCtx := types.NewNopToolContext(ctx, "", "")
+	tools, err := ts.Tools(tCtx)
+	if err != nil {
+		return nil, fmt.Errorf("list tools: %w", err)
+	}
+
+	for _, t := range tools {
+		if t.Name() == toolName {
+			// Wrap with RetryTool which handles retries, reconnections, and backoff
+			rt := &RetryTool{
+				client:     c,
+				serverName: serverName,
+				inner:      t,
+				toolName:   toolName,
+			}
+			return rt.Run(tCtx, args)
+		}
+	}
+
+	return nil, fmt.Errorf("tool %s not found on %s", toolName, serverName)
 }
 
 // RetryToolset wraps a native ADK Toolset to add retry logic
@@ -502,6 +466,17 @@ func (t *RetryTool) Declaration() *genai.FunctionDeclaration {
 		return dp.Declaration()
 	}
 	return nil
+}
+
+// ProcessRequest implements toolinternal.RequestProcessor.
+// This delegates to the wrapped tool to ensure ADK's preprocessing works correctly.
+func (t *RetryTool) ProcessRequest(ctx tool.Context, req *model.LLMRequest) error {
+	if rp, ok := t.inner.(interface {
+		ProcessRequest(ctx tool.Context, req *model.LLMRequest) error
+	}); ok {
+		return rp.ProcessRequest(ctx, req)
+	}
+	return nil // No-op if inner doesn't implement it (fallback)
 }
 
 // Run executes the tool with retry logic

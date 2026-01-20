@@ -98,7 +98,7 @@ flowchart TB
     JIRA_MCP --> JIRA
     CONF_MCP --> CONF
 
-    PROC -- Comment Write-back --> MCP_C
+    PROC -- Fetch History / Write Comments --> MCP_C
 ```
 
 ---
@@ -124,7 +124,14 @@ sequenceDiagram
 
     note right of WH: Transform: JSON -> Domain Object
     WH->>PROC: Enqueue Task (PR ID)
-    PROC->>AGENT: Review(PR Domain Obj)
+
+    %% Data Flow: Deduplication
+    PROC->>MCP: Fetch Existing Comments
+    MCP-->>BB: API Call
+    BB-->>MCP: Return Comments
+    MCP-->>PROC: Existing AI Comments
+
+    PROC->>AGENT: Review(PR + History)
 
     %% Data Flow: Context & Prompts
     loop Intelligence Loop
@@ -276,6 +283,7 @@ Handles Webhook events from Bitbucket Data Center:
 6. ✅ **Concurrency Safety**: Limits concurrent processing to prevent resource exhaustion.
 7. ✅ **Graceful Shutdown**: Supports signal-triggered graceful shutdown.
 8. ✅ **Persistent Storage**: Saves review history and metrics to SQLite.
+9. ✅ **Smart Deduplication**: Native Bitbucket deduplication prevents redundant comments across commits.
 
 ---
 

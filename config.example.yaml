@@ -28,16 +28,33 @@ mcp:
     endpoint: http://bitbucket-mcp:8080
     # allowed_tools: # Optional: whitelist of tools to expose, if empty all tools are allowed
     #   - bitbucket_get_pull_request
+    #   - bitbucket_get_pull_request_diff
+    #   - bitbucket_get_pull_request_changes
+    #   - bitbucket_get_pull_request_comments # For deduplication
+    #   - bitbucket_get_file_content
     #   - bitbucket_add_pull_request_comment
+    #   - bitbucket_get_commits
+    #   # Backup/Robustness tools
+    #   - bitbucket_get_pull_request_activities # To understand context/history
+    #   - bitbucket_get_diff_between_commits # Fallback if PR diff fails
+    #   - bitbucket_get_commit # Detailed commit info
 
   jira:
     endpoint: http://jira-mcp:8080
     # allowed_tools:
     #   - jira_get_issue
+    #   - jira_search_issues
+    #   # Backup tools
+    #   - jira_get_project # To understand project context
+    #   - jira_get_transitions # To understand issue status flow
 
   confluence:
     # allowed_tools:
-    #   - confluence_search
+    #   - confluence_search_content
+    #   - confluence_get_content_by_id
+    #   # Backup tools
+    #   - confluence_get_content_children # To explore document tree
+    #   - confluence_get_spaces # To find relevant spaces
 
 prompts:
   dir: prompts # Directory containing prompt templates

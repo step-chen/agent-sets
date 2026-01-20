@@ -98,7 +98,7 @@ flowchart TB
     JIRA_MCP --> JIRA
     CONF_MCP --> CONF
 
-    PROC -- 回写评论 --> MCP_C
+    PROC -- 拉取历史 / 回写评论 --> MCP_C
 ```
 
 ---
@@ -124,7 +124,14 @@ sequenceDiagram
 
     note right of WH: Transform: JSON -> Domain Object
     WH->>PROC: Enqueue Task (PR ID)
-    PROC->>AGENT: Review(PR Domain Obj)
+
+    %% Data Flow: Deduplication
+    PROC->>MCP: 获取已有评论 (去重)
+    MCP-->>BB: API 调用
+    BB-->>MCP: 返回评论列表
+    MCP-->>PROC: 现有 AI 评论
+
+    PROC->>AGENT: Review(PR + 历史上下文)
 
     %% Data Flow: Context & Prompts
     loop Intelligence Loop
@@ -276,6 +283,7 @@ mcp:
 6. ✅ **并发安全**：限制并发处理数量，防止资源耗尽
 7. ✅ **优雅关闭**：支持信号触发的优雅关闭
 8. ✅ **持久化存储**：保存审查历史和指标到 SQLite
+9. ✅ **智能去重**：Bitbucket 原生评论去重，防止重复评论
 
 ---
 

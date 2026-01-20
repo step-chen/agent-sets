@@ -41,7 +41,7 @@ func main() {
 	mcpClient := client.NewMCPClient(cfg)
 
 	// Create LLM once at startup
-	llm, err := client.NewLLM(context.Background(), cfg)
+	llm, err := client.NewLLM(cfg)
 	if err != nil {
 		slog.Error("create llm failed", "error", err)
 		os.Exit(1)

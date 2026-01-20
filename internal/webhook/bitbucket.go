@@ -18,6 +18,8 @@ import (
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/processor"
+
+	"github.com/tidwall/gjson"
 )
 
 // BitbucketWebhookHandler handles incoming Bitbucket webhook events
@@ -134,6 +136,17 @@ func (h *BitbucketWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 					"payload_preview", truncateForLog(body, 500),
 				)
 				metrics.PayloadParseFailures.WithLabelValues("both").Inc()
+				return
+			}
+
+			// Event Key Check
+			eventKey := gjson.GetBytes(body, "eventKey").String()
+			// Only process specific events
+			// pr:opened - New PR
+			// pr:from_ref_updated - Source branch updated (new commits)
+			if eventKey != "pr:opened" && eventKey != "pr:from_ref_updated" {
+				slog.Info("ignoring event", "event_key", eventKey, "pr_id", pr.ID)
+				metrics.WebhookRequests.WithLabelValues("ignored_event").Inc()
 				return
 			}
 

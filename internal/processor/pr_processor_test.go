@@ -11,12 +11,12 @@ import (
 
 // MockReviewer mocks the Reviewer interface
 type MockReviewer struct {
-	ReviewPRFunc func(ctx context.Context, pr *domain.PullRequest) (*agent.ReviewResult, error)
+	ReviewPRFunc func(ctx context.Context, req *agent.ReviewRequest) (*agent.ReviewResult, error)
 }
 
-func (m *MockReviewer) ReviewPR(ctx context.Context, pr *domain.PullRequest) (*agent.ReviewResult, error) {
+func (m *MockReviewer) ReviewPR(ctx context.Context, req *agent.ReviewRequest) (*agent.ReviewResult, error) {
 	if m.ReviewPRFunc != nil {
-		return m.ReviewPRFunc(ctx, pr)
+		return m.ReviewPRFunc(ctx, req)
 	}
 	return nil, nil // Default
 }
@@ -30,13 +30,17 @@ func (m *MockCommenter) CallTool(ctx context.Context, serverName, toolName strin
 	if m.CallToolFunc != nil {
 		return m.CallToolFunc(ctx, serverName, toolName, args)
 	}
+	// Return a default suitable for parsing (empty bitbucket comments response)
+	if toolName == "bitbucket_get_pull_request_comments" {
+		return `{"values": []}`, nil
+	}
 	return nil, nil // Default
 }
 
 func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
 	// Setup mocks
 	mockReviewer := &MockReviewer{
-		ReviewPRFunc: func(ctx context.Context, pr *domain.PullRequest) (*agent.ReviewResult, error) {
+		ReviewPRFunc: func(ctx context.Context, req *agent.ReviewRequest) (*agent.ReviewResult, error) {
 			return &agent.ReviewResult{
 				Comments: []agent.ReviewComment{
 					{File: "main.go", Line: 10, Comment: "Fix this"},
@@ -51,7 +55,10 @@ func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
 	mockCommenter := &MockCommenter{
 		CallToolFunc: func(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
 			callCount++
-			// Improve verification of args here if needed
+			// Helper to simulate comments response
+			if toolName == "bitbucket_get_pull_request_comments" {
+				return `{"values":[]}`, nil
+			}
 			return nil, nil
 		},
 	}
@@ -77,15 +84,15 @@ func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
 		t.Errorf("Expected success, got error: %v", err)
 	}
 
-	// Expect 2 calls: 1 for comment, 1 for summary
-	if callCount != 2 {
-		t.Errorf("Expected 2 CallTool invocations, got %d", callCount)
+	// Expect 3 calls: 1 fetch comments, 1 post comment, 1 post summary
+	if callCount != 3 {
+		t.Errorf("Expected 3 CallTool invocations, got %d", callCount)
 	}
 }
 
 func TestPRProcessor_ProcessPullRequest_ReviewFail(t *testing.T) {
 	mockReviewer := &MockReviewer{
-		ReviewPRFunc: func(ctx context.Context, pr *domain.PullRequest) (*agent.ReviewResult, error) {
+		ReviewPRFunc: func(ctx context.Context, req *agent.ReviewRequest) (*agent.ReviewResult, error) {
 			return nil, errors.New("review failed")
 		},
 	}
