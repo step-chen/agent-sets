@@ -71,6 +71,14 @@ func (a *OpenAIAdapter) GenerateContent(ctx context.Context, req *model.LLMReque
 			Model:    shared.ChatModel(a.model),
 			Messages: messages,
 		}
+
+		// DEBUG logging for 400 error investigation
+		if len(messages) == 0 {
+			slog.Error("openai request has empty messages", "req_parts", len(req.Contents))
+		} else {
+			msgsJSON, _ := json.Marshal(messages)
+			slog.Debug("openai request messages", "count", len(messages), "payload", string(msgsJSON))
+		}
 		if len(tools) > 0 {
 			params.Tools = tools
 		}
@@ -296,6 +304,13 @@ func (a *OpenAIAdapter) convertMessages(contents []*genai.Content) ([]openai.Cha
 				if toolCallID == "" {
 					toolCallID = "call_" + tr.Name // Fallback for legacy compatibility
 				}
+				// OpenAI ToolMessage requires content to be a string.
+				// If contentJSON is empty object "{}", strictly speaking it's valid JSON.
+				// Ensure ToolCallID is present.
+				if toolCallID == "" {
+					slog.Warn("missing tool call id in tool response", "name", tr.Name)
+					continue
+				}
 				messages = append(messages, openai.ToolMessage(string(contentJSON), toolCallID))
 			}
 		}
@@ -307,38 +322,53 @@ func (a *OpenAIAdapter) convertMessages(contents []*genai.Content) ([]openai.Cha
 func (a *OpenAIAdapter) convertTools(toolsMap map[string]any) ([]openai.ChatCompletionToolParam, error) {
 	var openaiTools []openai.ChatCompletionToolParam
 	for _, toolVal := range toolsMap {
-		// Expecting *genai.Tool or genai.Tool
-		var t *genai.Tool
+		// Try to extract declaration from various types
 		switch v := toolVal.(type) {
 		case *genai.Tool:
-			t = v
-		case genai.Tool:
-			t = &v
-		default:
-			slog.Warn("unknown tool type", "type", fmt.Sprintf("%T", toolVal))
-			continue
-		}
-
-		for _, fd := range t.FunctionDeclarations {
-			paramsJSON, err := json.Marshal(fd.Parameters)
-			if err != nil {
-				slog.Warn("marshal params failed", "name", fd.Name, "error", err)
-				paramsJSON = []byte("{}")
+			// Handle standard genai.Tool (which contains FunctionDeclarations)
+			for _, fd := range v.FunctionDeclarations {
+				addFunction(fd, &openaiTools)
 			}
-			var paramsMap map[string]interface{}
-			_ = json.Unmarshal(paramsJSON, &paramsMap)
-
-			openaiTools = append(openaiTools, openai.ChatCompletionToolParam{
-				Type: constant.Function("function"),
-				Function: shared.FunctionDefinitionParam{
-					Name:        fd.Name,                      // Fixed: expected string
-					Description: param.NewOpt(fd.Description), // Fixed: expected param.Opt[string]
-					Parameters:  shared.FunctionParameters(paramsMap),
-				},
-			})
+			continue
+		case genai.Tool:
+			for _, fd := range v.FunctionDeclarations {
+				addFunction(fd, &openaiTools)
+			}
+			continue
+		case interface {
+			Declaration() *genai.FunctionDeclaration
+		}:
+			// Handle generic tool implementing Declaration() (like mcptoolset.mcpTool or RetryTool)
+			fd := v.Declaration()
+			if fd != nil {
+				addFunction(fd, &openaiTools)
+			}
+			continue
+		default:
+			slog.Warn("unknown tool type", "type", fmt.Sprintf("%T", toolVal), "value", toolVal)
+			continue
 		}
 	}
 	return openaiTools, nil
+}
+
+func addFunction(fd *genai.FunctionDeclaration, tools *[]openai.ChatCompletionToolParam) {
+	paramsJSON, err := json.Marshal(fd.Parameters)
+	if err != nil {
+		slog.Warn("marshal params failed", "name", fd.Name, "error", err)
+		paramsJSON = []byte("{}")
+	}
+	var paramsMap map[string]interface{}
+	_ = json.Unmarshal(paramsJSON, &paramsMap)
+
+	*tools = append(*tools, openai.ChatCompletionToolParam{
+		Type: constant.Function("function"),
+		Function: shared.FunctionDefinitionParam{
+			Name:        fd.Name,
+			Description: param.NewOpt(fd.Description),
+			Parameters:  shared.FunctionParameters(paramsMap),
+		},
+	})
 }
 
 // convertResponse converts OpenAI response to ADK response
