@@ -275,15 +275,19 @@ mcp:
 5. ✅ **Jira 对齐验证**：检查 PR 是否与相关 Jira 问题对齐
 6. ✅ **并发安全**：限制并发处理数量，防止资源耗尽
 7. ✅ **优雅关闭**：支持信号触发的优雅关闭
+8. ✅ **持久化存储**：保存审查历史和指标到 SQLite
 
 ---
 
 ## 待完善功能
 
-| 功能         | 状态   | 说明               |
-| ------------ | ------ | ------------------ |
-| 持久化存储   | 未实现 | 审查历史和指标存储 |
-| 更多审查算法 | 未实现 | 可扩展的审查规则   |
+| 功能         | 状态      | 说明                       |
+| ------------ | --------- | -------------------------- |
+| 持久化存储   | ✅ 已完成 | 审查历史和指标存储         |
+| PostgreSQL   | 未实现    | 生产级数据库支持           |
+| 历史记录 API | 未实现    | 查询审查记录的 HTTP 接口   |
+| 管理后台     | 未实现    | 审查数据与指标的可视化看板 |
+| 更多审查算法 | 未实现    | 可扩展的审查规则           |
 
 ---
 
@@ -340,8 +344,10 @@ mcp:
      -e BITBUCKET_MCP_ENDPOINT="http://bitbucket-mcp:8080" \
      -e BITBUCKET_MCP_TOKEN="your_token" \
      -e WEBHOOK_SECRET="your_webhook_secret" \
-     --name pr-review \
-     pr-review-automation:latest
+      -e WEBHOOK_SECRET="your_webhook_secret" \
+      -v $(pwd)/data:/app/data \
+      --name pr-review \
+      pr-review-automation:latest
    ```
 
 3. 查看日志：

@@ -64,6 +64,14 @@ type Config struct {
 	} `yaml:"mcp"`
 
 	Prompts PromptsConfig `yaml:"prompts"`
+
+	Storage StorageConfig `yaml:"storage"`
+}
+
+// StorageConfig holds configuration for review persistence
+type StorageConfig struct {
+	Driver string `yaml:"driver"` // sqlite
+	DSN    string `yaml:"dsn"`    // Connection string
 }
 
 // GetLogLevel returns the slog.Level based on Log.Level string

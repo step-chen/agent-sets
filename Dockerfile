@@ -54,7 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Create directories for config and logs
-RUN mkdir -p /app/config /app/logs && \
+RUN mkdir -p /app/config /app/logs /app/data && \
     chown -R appuser:appgroup /app
 
 # Copy binary from builder

@@ -57,7 +57,7 @@ func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
 	}
 
 	// Create processor
-	p := NewPRProcessor(mockReviewer, mockCommenter)
+	p := NewPRProcessor(mockReviewer, mockCommenter, nil)
 
 	// Test data
 	pr := &domain.PullRequest{
@@ -91,7 +91,7 @@ func TestPRProcessor_ProcessPullRequest_ReviewFail(t *testing.T) {
 	}
 	mockCommenter := &MockCommenter{}
 
-	p := NewPRProcessor(mockReviewer, mockCommenter)
+	p := NewPRProcessor(mockReviewer, mockCommenter, nil)
 
 	err := p.ProcessPullRequest(context.Background(), &domain.PullRequest{ID: "123"})
 	if err == nil {

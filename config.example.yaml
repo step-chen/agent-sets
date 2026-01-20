@@ -41,3 +41,7 @@ mcp:
 
 prompts:
   dir: prompts # Directory containing prompt templates
+
+storage:
+  driver: sqlite
+  dsn: "data/reviews.db"

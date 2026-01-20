@@ -8,7 +8,9 @@ import (
 	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
+	"pr-review-automation/internal/storage"
 	"strconv"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -32,18 +34,21 @@ type Commenter interface {
 type PRProcessor struct {
 	reviewer  Reviewer
 	commenter Commenter
+	storage   storage.Repository
 }
 
 // NewPRProcessor creates a new PR processor with dependencies injected
-func NewPRProcessor(reviewer Reviewer, commenter Commenter) *PRProcessor {
+func NewPRProcessor(reviewer Reviewer, commenter Commenter, storage storage.Repository) *PRProcessor {
 	return &PRProcessor{
 		reviewer:  reviewer,
 		commenter: commenter,
+		storage:   storage,
 	}
 }
 
 // ProcessPullRequest processes a pull request
 func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullRequest) error {
+	start := time.Now()
 	slog.Debug("process pr", "id", pr.ID, "repo", pr.RepoSlug, "title", pr.Title)
 	slog.Info("processing pr", "id", pr.ID)
 
@@ -55,6 +60,24 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 	if err != nil {
 		metrics.PullRequestTotal.WithLabelValues("failed").Inc()
 		return fmt.Errorf("review pr: %w", err)
+	}
+
+	// Persist review result
+	if p.storage != nil {
+		record := &storage.ReviewRecord{
+			ID:          fmt.Sprintf("%s-%s-%s-%d", pr.ProjectKey, pr.RepoSlug, pr.ID, time.Now().UnixNano()),
+			PullRequest: pr,
+			Result:      review,
+			CreatedAt:   time.Now(),
+			DurationMs:  time.Since(start).Milliseconds(),
+			Status:      "success",
+		}
+		if err := p.storage.SaveReview(ctx, record); err != nil {
+			slog.Error("save review failed", "error", err)
+			// Non-blocking: continue even if storage fails
+		} else {
+			slog.Debug("review saved", "id", record.ID)
+		}
 	}
 
 	slog.Info("posting comments", "count", len(review.Comments))

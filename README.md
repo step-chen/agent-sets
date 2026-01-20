@@ -275,6 +275,7 @@ Handles Webhook events from Bitbucket Data Center:
 5. ✅ **Jira Alignment Verification**: Checks if the PR aligns with relevant Jira issues.
 6. ✅ **Concurrency Safety**: Limits concurrent processing to prevent resource exhaustion.
 7. ✅ **Graceful Shutdown**: Supports signal-triggered graceful shutdown.
+8. ✅ **Persistent Storage**: Saves review history and metrics to SQLite.
 
 ---
 
@@ -282,7 +283,10 @@ Handles Webhook events from Bitbucket Data Center:
 
 | Feature                | Status    | Description                            |
 | ---------------------- | --------- | -------------------------------------- |
-| Persistent Storage     | Not Impl. | Storage for review history and metrics |
+| Persistent Storage     | ✅ Done   | Storage for review history and metrics |
+| PostgreSQL Support     | Not Impl. | Production-grade database support      |
+| Review History API     | Not Impl. | HTTP functionality to query reviews    |
+| Admin Dashboard        | Not Impl. | Web UI for metrics and history         |
 | More Review Algorithms | Not Impl. | Extensible review rules                |
 
 ---
@@ -340,8 +344,10 @@ For detailed production deployment instructions (including Webhook configuration
      -e BITBUCKET_MCP_ENDPOINT="http://bitbucket-mcp:8080" \
      -e BITBUCKET_MCP_TOKEN="your_token" \
      -e WEBHOOK_SECRET="your_webhook_secret" \
-     --name pr-review \
-     pr-review-automation:latest
+      -e WEBHOOK_SECRET="your_webhook_secret" \
+      -v $(pwd)/data:/app/data \
+      --name pr-review \
+      pr-review-automation:latest
    ```
 
 3. View logs:

@@ -16,6 +16,7 @@ import (
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/processor"
+	"pr-review-automation/internal/storage"
 	"pr-review-automation/internal/webhook"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -71,8 +72,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize storage
+	var store storage.Repository
+	if cfg.Storage.Driver == "sqlite" {
+		var err error
+		store, err = storage.NewSQLiteRepository(cfg.Storage.DSN)
+		if err != nil {
+			slog.Error("init storage failed", "error", err)
+			os.Exit(1)
+		}
+		defer store.Close()
+	} else if cfg.Storage.Driver != "" {
+		slog.Warn("unknown storage driver", "driver", cfg.Storage.Driver)
+	}
+
 	// Initialize PR processor
-	prProcessor := processor.NewPRProcessor(prReviewAgent, mcpClient)
+	prProcessor := processor.NewPRProcessor(prReviewAgent, mcpClient, store)
 
 	// Initialize Payload Parser
 	payloadParser := webhook.NewPayloadParser(llm, promptLoader)
@@ -164,6 +179,8 @@ func main() {
 	case <-time.After(30 * time.Second):
 		slog.Warn("task timeout, exiting")
 	}
+
+	// 3. defer store.Close() will handle storage cleanup (via WAL checkpoint)
 
 	slog.Info("server stopped")
 }
