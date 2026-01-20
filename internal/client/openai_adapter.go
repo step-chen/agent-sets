@@ -369,3 +369,30 @@ func (a *OpenAIAdapter) convertResponse(msg openai.ChatCompletionMessage) (*mode
 }
 
 // Helper to consolidate tool call deltas
+
+// SimpleTextQuery sends a single text request and returns the text response.
+// Ideal for simple Q&A like JSON parsing.
+func (a *OpenAIAdapter) SimpleTextQuery(ctx context.Context, systemPrompt, userInput string) (string, error) {
+	messages := []openai.ChatCompletionMessageParamUnion{}
+
+	if systemPrompt != "" {
+		messages = append(messages, openai.SystemMessage(systemPrompt))
+	}
+	messages = append(messages, openai.UserMessage(userInput))
+
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(a.model),
+		Messages: messages,
+	}
+
+	resp, err := a.client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		return "", fmt.Errorf("openai simple request: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("no openai response")
+	}
+
+	return resp.Choices[0].Message.Content, nil
+}

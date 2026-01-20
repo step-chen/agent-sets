@@ -17,6 +17,7 @@
 | **Google GenAI**  | v1.42.0                                            |
 | **MCP Client**    | github.com/modelcontextprotocol/go-sdk             |
 | **LLM 模型**      | Gemini 1.5 Flash                                   |
+| **监控**          | Prometheus Metrics                                 |
 | **协议支持**      | MCP (Model Context Protocol)、A2A (Agent-to-Agent) |
 
 ---
@@ -102,6 +103,49 @@ flowchart TB
 
 ---
 
+## 工作流程 (Workflow)
+
+以下时序图展示了从 Webhook 触发到评论回写的完整工作流与数据流转：
+
+```mermaid
+sequenceDiagram
+    participant User as Developer
+    participant BB as Bitbucket
+    participant WH as Webhook Handler
+    participant PROC as PR Processor
+    participant AGENT as Review Agent
+    participant LLM as Google Gemini
+    participant MCP as MCP Client
+
+    %% Data Flow: Raw JSON Payload
+    User->>BB: Create/Update PR
+    BB->>WH: POST /webhook (JSON Payload)
+    WH-->>BB: 200 OK (Accepted)
+
+    note right of WH: Transform: JSON -> Domain Object
+    WH->>PROC: Enqueue Task (PR ID)
+    PROC->>AGENT: Review(PR Domain Obj)
+
+    %% Data Flow: Context & Prompts
+    loop Intelligence Loop
+        AGENT->>LLM: Analyze (Prompt + Code Context)
+        LLM-->>AGENT: Decision (Tool Call)
+        AGENT->>MCP: Call Tool (Args)
+        MCP-->>BB: Fetch Data (API)
+        BB-->>MCP: Return Data (JSON)
+        MCP-->>AGENT: Tool Output (Standardized)
+    end
+
+    %% Data Flow: Structured Review
+    AGENT->>LLM: Final Decision
+    LLM-->>AGENT: Review Comments (Structured)
+    AGENT->>PROC: Return ReviewResult
+    PROC->>MCP: Add Comments (API Call)
+    MCP->>BB: Comments posted
+```
+
+---
+
 ## 核心模块详解
 
 ### 1. 服务入口 (`cmd/server/main.go`)
@@ -139,6 +183,7 @@ mcp:
 | 服务端口      | `server.port`           | `PORT`            | 默认 8080               |
 | Bitbucket MCP | `mcp.bitbucket.*`       | `BITBUCKET_MCP_*` | Bitbucket MCP 服务/令牌 |
 | Webhook 签名  | `server.webhook_secret` | `WEBHOOK_SECRET`  | HMAC 签名密钥           |
+| Prompts 路径  | `prompts.dir`           | -                 | 提示词模板根目录        |
 
 ---
 
@@ -186,6 +231,25 @@ mcp:
 - 接收 Webhook → 调用 Agent → 获取结果 → **回写评论**
 - 解析 Agent 返回的结构化评论，调用 `bitbucket_add_pull_request_comment` 发布到 Bitbucket
 - 支持文件级和行级评论
+
+#### 评论展示样式 (Comment Output)
+
+工具会在 Bitbucket PR 中自动发布两种类型的评论：
+
+1.  **全局汇总 (Summary Comment)**:
+
+    ```markdown
+    **AI Review Summary (Model: Gemini 1.5 Flash)**
+    Score: 85
+
+    ## 主要发现
+
+    - 代码整体结构良好，但在异常处理方面有待改进。
+    - ...
+    ```
+
+2.  **代码行内评论 (Inline Comments)**:
+    针对具体代码行的详细改进建议或 Bug 警告。
 
 ---
 

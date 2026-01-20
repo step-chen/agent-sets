@@ -6,14 +6,20 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
+
+	"iter"
+
+	"google.golang.org/adk/model"
 )
 
 // MockProcessor implements processor.Processor for testing
@@ -28,6 +34,37 @@ func (m *MockProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullR
 	return nil
 }
 
+// MockLLM implements model.LLM and TextQuerier for testing
+type MockLLM struct {
+	SimpleQueryFunc func(ctx context.Context, prompt, input string) (string, error)
+}
+
+func (m *MockLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {}
+}
+
+func (m *MockLLM) Name() string { return "mock-llm" }
+
+func (m *MockLLM) Ping(ctx context.Context) error { return nil }
+
+func (m *MockLLM) SimpleTextQuery(ctx context.Context, systemPrompt, userInput string) (string, error) {
+	if m.SimpleQueryFunc != nil {
+		return m.SimpleQueryFunc(ctx, systemPrompt, userInput)
+	}
+	return "{}", nil
+}
+
+// Helper to create a parser with mocked dependencies
+func createTestParser(t *testing.T, llm *MockLLM) *PayloadParser {
+	tmpDir := t.TempDir()
+	// Create a dummy prompt file
+	os.MkdirAll(filepath.Join(tmpDir, "system"), 0755)
+	os.WriteFile(filepath.Join(tmpDir, "system/pr_webhook_parser.md"), []byte("dummy prompt"), 0644)
+
+	loader := agent.NewPromptLoader(tmpDir)
+	return NewPayloadParser(llm, loader)
+}
+
 func TestBitbucketWebhookHandler_MethodNotAllowed(t *testing.T) {
 	cfg := &config.Config{
 		Server: struct {
@@ -36,13 +73,14 @@ func TestBitbucketWebhookHandler_MethodNotAllowed(t *testing.T) {
 			ReadTimeout      time.Duration `yaml:"read_timeout"`
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
-			WebhookSecret    string        `yaml:"-"` // From Env
+			WebhookSecret    string        `yaml:"-"`
 		}{
 			MaxBodySize:      2 * 1024 * 1024,
 			ConcurrencyLimit: 10,
 		},
 	}
-	handler := NewBitbucketWebhookHandler(cfg, nil)
+	parser := createTestParser(t, &MockLLM{})
+	handler := NewBitbucketWebhookHandler(cfg, nil, parser)
 
 	req := httptest.NewRequest(http.MethodGet, "/webhook", nil)
 	w := httptest.NewRecorder()
@@ -62,60 +100,33 @@ func TestBitbucketWebhookHandler_InvalidJSON(t *testing.T) {
 			ReadTimeout      time.Duration `yaml:"read_timeout"`
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
-			WebhookSecret    string        `yaml:"-"` // From Env
+			WebhookSecret    string        `yaml:"-"`
 		}{
 			MaxBodySize:      2 * 1024 * 1024,
 			ConcurrencyLimit: 10,
 		},
 	}
-	handler := NewBitbucketWebhookHandler(cfg, nil)
+	parser := createTestParser(t, &MockLLM{})
+	handler := NewBitbucketWebhookHandler(cfg, nil, parser)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewBufferString("not valid json"))
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)
-	}
-}
-
-func TestBitbucketWebhookHandler_IgnoredEvent(t *testing.T) {
-	cfg := &config.Config{
-		Server: struct {
-			Port             int           `yaml:"port"`
-			ConcurrencyLimit int64         `yaml:"concurrency_limit"`
-			ReadTimeout      time.Duration `yaml:"read_timeout"`
-			WriteTimeout     time.Duration `yaml:"write_timeout"`
-			MaxBodySize      int64         `yaml:"max_body_size"`
-			WebhookSecret    string        `yaml:"-"` // From Env
-		}{
-			MaxBodySize:      2 * 1024 * 1024,
-			ConcurrencyLimit: 10,
-		},
-	}
-	handler := NewBitbucketWebhookHandler(cfg, nil)
-
-	payload := BitbucketWebhookPayload{
-		EventKey: "repo:push", // Not a PR event
-	}
-	body, _ := json.Marshal(payload)
-
-	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewBuffer(body))
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
+	// Note: Invalid JSON is now caught in ServeHTTP (it unmarshals to map[string]interface{} check? No, handler checks utf8 then async parses)
+	// Actually, wait. The new ServeHTTP logic REMOVED the synchronous Unmarshal check.
+	// It only checks UTF8.
+	// So "not valid json" (if utf8) will be accepted (200 OK) and fail asynchronously.
+	// But `not valid json` IS valid utf8.
+	// So status should be 200 OK now! The parser is async.
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
 	}
-
-	if !bytes.Contains(w.Body.Bytes(), []byte("ignored")) {
-		t.Errorf("expected response to contain 'ignored', got %s", w.Body.String())
-	}
 }
 
-func TestBitbucketWebhookHandler_PROpenedEvent(t *testing.T) {
+func TestBitbucketWebhookHandler_PROpenedEvent_L1(t *testing.T) {
 	cfg := &config.Config{
 		Server: struct {
 			Port             int           `yaml:"port"`
@@ -123,34 +134,44 @@ func TestBitbucketWebhookHandler_PROpenedEvent(t *testing.T) {
 			ReadTimeout      time.Duration `yaml:"read_timeout"`
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
-			WebhookSecret    string        `yaml:"-"` // From Env
+			WebhookSecret    string        `yaml:"-"`
 		}{
 			MaxBodySize:      2 * 1024 * 1024,
 			ConcurrencyLimit: 10,
 		},
 	}
-	// Mock processor
+
+	processed := make(chan *domain.PullRequest, 1)
 	mockProc := &MockProcessor{
 		ProcessFunc: func(ctx context.Context, pr *domain.PullRequest) error {
+			processed <- pr
 			return nil
 		},
 	}
-	handler := NewBitbucketWebhookHandler(cfg, mockProc)
 
-	payload := BitbucketWebhookPayload{
-		EventKey: "pr:opened",
-	}
-	payload.Repository.Name = "test-repo"
-	payload.Repository.Slug = "test-repo"
-	payload.Repository.Project.Key = "TEST"
-	payload.PullRequest.ID = 123
-	payload.PullRequest.Title = "Test PR"
-	payload.PullRequest.Description = "Test description"
-	payload.PullRequest.Author.Name = "testuser"
+	parser := createTestParser(t, &MockLLM{})
+	handler := NewBitbucketWebhookHandler(cfg, mockProc, parser)
 
-	body, _ := json.Marshal(payload)
+	// L1 Payload
+	jsonBody := `{
+		"eventKey": "pr:opened",
+		"pullRequest": {
+			"id": 123,
+			"title": "Test PR",
+			"description": "Desc",
+			"toRef": {
+				"repository": {
+					"slug": "my-repo",
+					"project": { "key": "PROJ" }
+				}
+			},
+			"author": {
+				"user": { "name": "alice" }
+			}
+		}
+	}`
 
-	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewBuffer(body))
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewBufferString(jsonBody))
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -159,12 +180,88 @@ func TestBitbucketWebhookHandler_PROpenedEvent(t *testing.T) {
 		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
 	}
 
-	if !bytes.Contains(w.Body.Bytes(), []byte("queued")) {
-		t.Errorf("expected response to contain 'queued', got %s", w.Body.String())
+	select {
+	case pr := <-processed:
+		if pr.ID != "123" {
+			t.Errorf("expected ID 123, got %s", pr.ID)
+		}
+		if pr.RepoSlug != "my-repo" {
+			t.Errorf("expected repo my-repo, got %s", pr.RepoSlug)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("timeout waiting for processing")
+	}
+}
+
+func TestBitbucketWebhookHandler_PROpenedEvent_L2(t *testing.T) {
+	cfg := &config.Config{
+		Server: struct {
+			Port             int           `yaml:"port"`
+			ConcurrencyLimit int64         `yaml:"concurrency_limit"`
+			ReadTimeout      time.Duration `yaml:"read_timeout"`
+			WriteTimeout     time.Duration `yaml:"write_timeout"`
+			MaxBodySize      int64         `yaml:"max_body_size"`
+			WebhookSecret    string        `yaml:"-"`
+		}{
+			MaxBodySize:      2 * 1024 * 1024,
+			ConcurrencyLimit: 10,
+		},
 	}
 
-	// Wait for async processing
-	time.Sleep(50 * time.Millisecond)
+	processed := make(chan *domain.PullRequest, 1)
+	mockProc := &MockProcessor{
+		ProcessFunc: func(ctx context.Context, pr *domain.PullRequest) error {
+			processed <- pr
+			return nil
+		},
+	}
+
+	mockLLM := &MockLLM{
+		SimpleQueryFunc: func(ctx context.Context, prompt, input string) (string, error) {
+			return `{
+				"id": "999",
+				"projectKey": "LLM_PROJ",
+				"repoSlug": "llm-repo",
+				"title": "Extracted by LLM",
+				"description": "It works",
+				"authorName": "ai-user"
+			}`, nil
+		},
+	}
+
+	parser := createTestParser(t, mockLLM)
+	handler := NewBitbucketWebhookHandler(cfg, mockProc, parser)
+
+	// Payload with completely unknown structure that L1 fails to parse all required fields
+	// L1 needs ID, ProjectKey to consider "Valid" (actually IsValid checks ID, ProjectKey, RepoSlug)
+	jsonBody := `{
+		"weirdEvent": "pr:weird",
+		"data": {
+			"meta": { "identifier": 999 },
+			"details": { "about": "some stuff" }
+		}
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewBufferString(jsonBody))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	select {
+	case pr := <-processed:
+		if pr.ID != "999" {
+			t.Errorf("expected ID 999, got %s", pr.ID)
+		}
+		if pr.ProjectKey != "LLM_PROJ" {
+			t.Errorf("expected ID LLM_PROJ, got %s", pr.ProjectKey)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("timeout waiting for processing")
+	}
 }
 
 func TestBitbucketWebhookHandler_BodySizeLimit(t *testing.T) {
@@ -175,17 +272,16 @@ func TestBitbucketWebhookHandler_BodySizeLimit(t *testing.T) {
 			ReadTimeout      time.Duration `yaml:"read_timeout"`
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
-			WebhookSecret    string        `yaml:"-"` // From Env
+			WebhookSecret    string        `yaml:"-"`
 		}{
 			MaxBodySize:      10, // Very small limit
 			ConcurrencyLimit: 10,
 		},
 	}
-	handler := NewBitbucketWebhookHandler(cfg, nil)
+	parser := createTestParser(t, &MockLLM{})
+	handler := NewBitbucketWebhookHandler(cfg, nil, parser)
 
-	// Create a payload larger than the limit
 	largePayload := bytes.Repeat([]byte("a"), 100)
-
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewBuffer(largePayload))
 	w := httptest.NewRecorder()
 
@@ -200,7 +296,6 @@ func TestVerifySignature_Valid(t *testing.T) {
 	body := []byte(`{"test": "data"}`)
 	secret := "my-secret-key"
 
-	// Compute expected signature
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	expectedSig := "sha256=" + hex.EncodeToString(mac.Sum(nil))

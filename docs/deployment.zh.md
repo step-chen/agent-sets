@@ -42,7 +42,22 @@
 
 ---
 
-## 3. Bitbucket Webhook 配置
+## 3. 配置文件配置 (config.yaml)
+
+除了环境变量，服务还支持通过 `config.yaml` 进行深度配置。
+
+### Prompts 解析配置
+
+| YAML 路径     | 说明                             | 默认值    |
+| :------------ | :------------------------------- | :-------- |
+| `prompts.dir` | 存放提示词 Markdown 文件的根目录 | `prompts` |
+
+> [!TIP]
+> 在 Docker 环境中，该目录默认挂载在 `/app/prompts`。如果您修改了此路径，请确保同步更新 `docker-compose.yaml` 中的挂载点。
+
+---
+
+## 4. Bitbucket Webhook 配置
 
 为了让服务接收 PR 事件，请在 Bitbucket 项目中进行如下设置：
 
@@ -103,8 +118,8 @@ CGO_ENABLED=0 go build -o pr-review-server ./cmd/server
 服务内置了健康检查端点，可以通过以下命令验证服务是否存活：
 
 ```bash
-curl http://localhost:8080/health
-# 返回: OK
+curl http://localhost:8080/health/ready
+# 返回: Ready
 ```
 
 ### 查看日志

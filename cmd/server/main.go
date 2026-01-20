@@ -74,8 +74,11 @@ func main() {
 	// Initialize PR processor
 	prProcessor := processor.NewPRProcessor(prReviewAgent, mcpClient)
 
+	// Initialize Payload Parser
+	payloadParser := webhook.NewPayloadParser(llm, promptLoader)
+
 	// Initialize webhook handler
-	webhookHandler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor)
+	webhookHandler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, payloadParser)
 
 	// Setup HTTP server
 	mux := http.NewServeMux()
@@ -98,16 +101,6 @@ func main() {
 		// Could also check LLM connectivity here if needed
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Ready"))
-	})
-
-	// Legacy /health aliases to /health/ready for backward compatibility
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if !mcpClient.IsHealthy() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
 	})
 
 	// Add root path handler to catch misconfiguration (e.g. omitted /webhook in URL)

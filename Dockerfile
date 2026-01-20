@@ -59,6 +59,7 @@ RUN mkdir -p /app/config /app/logs && \
 
 # Copy binary from builder
 COPY --from=builder /app/pr-review-server /app/pr-review-server
+COPY --from=builder /app/prompts /app/prompts
 
 # Default environment variables
 ENV LOG_LEVEL=INFO \

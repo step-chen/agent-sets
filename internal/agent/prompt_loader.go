@@ -43,6 +43,17 @@ func (l *PromptLoader) Load(project, language string) (string, error) {
 	return "", fmt.Errorf("no prompt found for project=%q language=%q, tried: %v", project, language, candidates)
 }
 
+// LoadPrompt loads a specific prompt file directly from the base directory.
+// Name should be relative path without extension, e.g. "system/webhook_parser"
+func (l *PromptLoader) LoadPrompt(name string) (string, error) {
+	path := filepath.Join(l.baseDir, name+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read prompt %s: %w", path, err)
+	}
+	return string(data), nil
+}
+
 // languageExtensions maps file extensions to language identifiers
 var languageExtensions = map[string]string{
 	".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".c": "cpp", ".h": "cpp", ".hpp": "cpp", ".hxx": "cpp",

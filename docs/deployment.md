@@ -42,7 +42,22 @@ The service is configured via environment variables. Please prepare the followin
 
 ---
 
-## 3. Bitbucket Webhook Configuration
+## 3. Configuration File (config.yaml)
+
+In addition to environment variables, the service supports advanced configuration via `config.yaml`.
+
+### Prompts Configuration
+
+| YAML Path     | Description                                  | Default   |
+| :------------ | :------------------------------------------- | :-------- |
+| `prompts.dir` | Root directory for prompt Markdown templates | `prompts` |
+
+> [!TIP]
+> In Docker environments, this directory is mounted at `/app/prompts` by default. If you change this path, ensure you update the volume mount in `docker-compose.yaml`.
+
+---
+
+## 4. Bitbucket Webhook Configuration
 
 To allow the service to receive PR events, please configure the following in your Bitbucket project:
 
@@ -103,8 +118,8 @@ CGO_ENABLED=0 go build -o pr-review-server ./cmd/server
 The service has a built-in health check endpoint. You can verify if the service is alive using the following command:
 
 ```bash
-curl http://localhost:8080/health
-# Returns: OK
+curl http://localhost:8080/health/ready
+# Returns: Ready
 ```
 
 ### View Logs

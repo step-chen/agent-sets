@@ -36,4 +36,10 @@ var (
 		Name: "pr_review_comment_failures_total",
 		Help: "Total number of failed comment posts to Bitbucket",
 	}, []string{"reason"})
+
+	// PayloadParseFailures counts failed payload parsing attempts
+	PayloadParseFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "webhook_payload_parse_failures_total",
+		Help: "Total number of webhook payloads that failed to parse",
+	}, []string{"failure_type"}) // failure_type: gjson, llm, both
 )

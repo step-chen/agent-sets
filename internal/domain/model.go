@@ -11,3 +11,8 @@ type PullRequest struct {
 	Author      string
 	// SourceBranch and TargetBranch can be added here if needed in the future
 }
+
+// IsValid checks if the PullRequest has the minimum required fields to proceed.
+func (pr *PullRequest) IsValid() bool {
+	return pr.ID != "" && pr.ProjectKey != "" && pr.RepoSlug != ""
+}

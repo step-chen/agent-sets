@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,9 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"pr-review-automation/internal/config"
-	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/processor"
 )
@@ -25,15 +24,17 @@ import (
 type BitbucketWebhookHandler struct {
 	prProcessor processor.Processor
 	config      *config.Config
+	parser      *PayloadParser
 	sem         chan struct{} // Semaphore to limit concurrent processing
 	wg          sync.WaitGroup
 }
 
 // NewBitbucketWebhookHandler creates a new webhook handler
-func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Processor) *BitbucketWebhookHandler {
+func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Processor, parser *PayloadParser) *BitbucketWebhookHandler {
 	return &BitbucketWebhookHandler{
 		prProcessor: prProcessor,
 		config:      cfg,
+		parser:      parser,
 		sem:         make(chan struct{}, cfg.Server.ConcurrencyLimit),
 	}
 }
@@ -41,26 +42,6 @@ func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Proces
 // WaitForCompletion blocks until all background PR processing tasks complete
 func (h *BitbucketWebhookHandler) WaitForCompletion() {
 	h.wg.Wait()
-}
-
-// BitbucketWebhookPayload represents the structure of a Bitbucket webhook payload
-type BitbucketWebhookPayload struct {
-	EventKey   string `json:"eventKey"`
-	Repository struct {
-		Name    string `json:"name"`
-		Slug    string `json:"slug"`
-		Project struct {
-			Key string `json:"key"`
-		} `json:"project"`
-	} `json:"repository"`
-	PullRequest struct {
-		ID          int    `json:"id"`
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Author      struct {
-			Name string `json:"name"`
-		} `json:"author"`
-	} `json:"pullRequest"`
 }
 
 // ServeHTTP handles incoming webhook requests
@@ -99,37 +80,25 @@ func (h *BitbucketWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 			metrics.WebhookRequests.WithLabelValues("invalid_signature").Inc()
 			return
 		}
-
 	}
 
-	var payload BitbucketWebhookPayload
-	if err := json.Unmarshal(body, &payload); err != nil {
-		slog.Warn("parse payload failed", "error", err)
-		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
-		metrics.WebhookRequests.WithLabelValues("invalid_json").Inc()
+	// Check if body is valid UTF-8
+	if !utf8.Valid(body) {
+		slog.Warn("request body is not valid utf-8")
+		http.Error(w, "Invalid encoding", http.StatusBadRequest)
+		metrics.WebhookRequests.WithLabelValues("invalid_encoding").Inc()
 		return
 	}
 
-	slog.Debug("Parsed webhook payload",
-		"event_key", payload.EventKey,
-		"project", payload.Repository.Project.Key,
-		"repo", payload.Repository.Slug,
-		"pr_id", payload.PullRequest.ID,
-		"pr_title", payload.PullRequest.Title,
-	)
-
-	// Only process pull request opened or updated events
-	if payload.EventKey != "pr:opened" && payload.EventKey != "pr:updated" {
-		slog.Debug("Ignoring webhook event", "event_key", payload.EventKey)
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "Event %s ignored", payload.EventKey)
-		metrics.WebhookRequests.WithLabelValues("ignored").Inc()
-		return
-	}
+	// Note: We delay parsing to the async goroutine to return 200 OK quickly.
+	// However, we could do a quick L1 probe here?
+	// The requirement implies asynchronous processing.
+	// But validation failure should ideally be user-visible?
+	// Given the instructions ("async scenario... cannot return 500"), we stick to full async.
 
 	metrics.WebhookRequests.WithLabelValues("accepted").Inc()
 
-	// 2. Concurrency: Check capacity BEFORE creating goroutine to prevent goroutine leak
+	// 3. Concurrency: Check capacity BEFORE creating goroutine to prevent goroutine leak
 	select {
 	case h.sem <- struct{}{}:
 		// Acquired semaphore, proceed with async processing
@@ -157,14 +126,21 @@ func (h *BitbucketWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 
-			// Convert to Domain Model
-			pr := &domain.PullRequest{
-				ID:          fmt.Sprintf("%d", payload.PullRequest.ID),
-				ProjectKey:  payload.Repository.Project.Key,
-				RepoSlug:    payload.Repository.Slug,
-				Title:       payload.PullRequest.Title,
-				Description: payload.PullRequest.Description,
-				Author:      payload.PullRequest.Author.Name,
+			// Parse Payload using Robust Parser
+			pr, err := h.parser.Parse(ctx, body)
+			if err != nil {
+				slog.Error("payload parse failed",
+					"error", err,
+					"payload_preview", truncateForLog(body, 500),
+				)
+				metrics.PayloadParseFailures.WithLabelValues("both").Inc()
+				return
+			}
+
+			if !pr.IsValid() {
+				slog.Error("parsed pr invalid (missing key fields)", "pr", pr)
+				metrics.WebhookRequests.WithLabelValues("invalid_payload").Inc()
+				return
 			}
 
 			slog.Info("processing pr", "pr_id", pr.ID, "repo", pr.RepoSlug)
@@ -180,9 +156,7 @@ func (h *BitbucketWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 
 	default:
 		// At capacity, reject with 429 Too Many Requests
-		slog.Warn("concurrency limit, request dropped",
-			"pr_id", payload.PullRequest.ID,
-			"repo", payload.Repository.Slug)
+		slog.Warn("concurrency limit, request dropped")
 		metrics.WebhookRequests.WithLabelValues("dropped_concurrency").Inc()
 		http.Error(w, "Server busy, please retry later", http.StatusTooManyRequests)
 	}
@@ -213,4 +187,11 @@ func verifySignature(body []byte, signature, secret string) bool {
 
 	// Use constant-time comparison to prevent timing attacks
 	return hmac.Equal([]byte(expectedSig), []byte(providedSig))
+}
+
+func truncateForLog(b []byte, max int) string {
+	if len(b) > max {
+		return string(b[:max]) + "..."
+	}
+	return string(b)
 }

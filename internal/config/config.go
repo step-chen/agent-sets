@@ -184,25 +184,3 @@ func getEnvInt(key string, fallback int) int {
 	}
 	return fallback
 }
-
-func getEnvInt64(key string, fallback int64) int64 {
-	valueStr := getEnv(key, "")
-	if valueStr == "" {
-		return fallback
-	}
-	if value, err := strconv.ParseInt(valueStr, 10, 64); err == nil {
-		return value
-	}
-	return fallback
-}
-
-func getEnvDuration(key string, fallback time.Duration) time.Duration {
-	valueStr := getEnv(key, "")
-	if valueStr == "" {
-		return fallback
-	}
-	if value, err := time.ParseDuration(valueStr); err == nil {
-		return value
-	}
-	return fallback
-}

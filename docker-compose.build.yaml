@@ -14,6 +14,7 @@ services:
       - "${PORT:-8080}:8080"
     volumes:
       - ./config.yaml:/app/config/config.yaml:ro
+      - ./prompts:/app/prompts:ro
       - ./logs:/app/logs
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -27,7 +28,7 @@ services:
       - CONFLUENCE_MCP_TOKEN=${CONFLUENCE_MCP_TOKEN:-}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
       interval: 30s
       timeout: 10s
       retries: 3

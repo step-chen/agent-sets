@@ -6,6 +6,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.2.0
 	github.com/openai/openai-go v1.12.0
 	github.com/prometheus/client_golang v1.23.2
+	github.com/tidwall/gjson v1.18.0
 	golang.org/x/sync v0.19.0
 	google.golang.org/adk v0.3.0
 	google.golang.org/genai v1.42.0
@@ -33,7 +34,6 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect

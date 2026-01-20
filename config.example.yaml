@@ -36,9 +36,8 @@ mcp:
     #   - jira_get_issue
 
   confluence:
-    endpoint: http://confluence-mcp:8080
     # allowed_tools:
     #   - confluence_search
 
-agent:
-  pr_review_prompt_name: code_review
+prompts:
+  dir: prompts # Directory containing prompt templates

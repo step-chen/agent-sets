@@ -17,6 +17,7 @@ This is a **PR Review Automation Tool** (`pr-review-automation`) built on the **
 | **Google GenAI**  | v1.42.0                                            |
 | **MCP Client**    | github.com/modelcontextprotocol/go-sdk             |
 | **LLM Model**     | Gemini 1.5 Flash                                   |
+| **Observability** | Prometheus Metrics                                 |
 | **Protocols**     | MCP (Model Context Protocol), A2A (Agent-to-Agent) |
 
 ---
@@ -102,6 +103,49 @@ flowchart TB
 
 ---
 
+## Workflow
+
+The following sequence diagram illustrates the complete workflow and data flow from Webhook trigger to comment write-back:
+
+```mermaid
+sequenceDiagram
+    participant User as Developer
+    participant BB as Bitbucket
+    participant WH as Webhook Handler
+    participant PROC as PR Processor
+    participant AGENT as Review Agent
+    participant LLM as Google Gemini
+    participant MCP as MCP Client
+
+    %% Data Flow: Raw JSON Payload
+    User->>BB: Create/Update PR
+    BB->>WH: POST /webhook (JSON Payload)
+    WH-->>BB: 200 OK (Accepted)
+
+    note right of WH: Transform: JSON -> Domain Object
+    WH->>PROC: Enqueue Task (PR ID)
+    PROC->>AGENT: Review(PR Domain Obj)
+
+    %% Data Flow: Context & Prompts
+    loop Intelligence Loop
+        AGENT->>LLM: Analyze (Prompt + Code Context)
+        LLM-->>AGENT: Decision (Tool Call)
+        AGENT->>MCP: Call Tool (Args)
+        MCP-->>BB: Fetch Data (API)
+        BB-->>MCP: Return Data (JSON)
+        MCP-->>AGENT: Tool Output (Standardized)
+    end
+
+    %% Data Flow: Structured Review
+    AGENT->>LLM: Final Decision
+    LLM-->>AGENT: Review Comments (Structured)
+    AGENT->>PROC: Return ReviewResult
+    PROC->>MCP: Add Comments (API Call)
+    MCP->>BB: Comments posted
+```
+
+---
+
 ## Core Modules
 
 ### 1. Service Entry (`cmd/server/main.go`)
@@ -139,6 +183,7 @@ mcp:
 | Service Port   | `server.port`           | `PORT`               | Default 8080                |
 | Bitbucket MCP  | `mcp.bitbucket.*`       | `BITBUCKET_MCP_*`    | Bitbucket MCP Service/Token |
 | Webhook Secret | `server.webhook_secret` | `WEBHOOK_SECRET`     | HMAC Signature Secret       |
+| Prompts Dir    | `prompts.dir`           | -                    | Root dir for prompts        |
 
 ---
 
@@ -183,9 +228,28 @@ Implemented based on `github.com/modelcontextprotocol/go-sdk`:
 
 Business Orchestration Layer:
 
-- Receives Webhook → Calls Agent → Gets Result → **Writes Back Comments**
-- Parses structured comments returned by the Agent and calls `bitbucket_add_pull_request_comment` to publish to Bitbucket.
-- Supports file-level and line-level comments.
+- Receives Webhook → Calls Agent → Gets Results → **Writes Back Comments**
+- Parses structured comments from Agent, calls `bitbucket_add_pull_request_comment` to post to Bitbucket
+- Supports file-level and line-level comments
+
+#### Comment Output Style
+
+The tool automatically posts two types of comments to the Bitbucket PR:
+
+1.  **Summary Comment**:
+
+    ```markdown
+    **AI Review Summary (Model: Gemini 1.5 Flash)**
+    Score: 85
+
+    ## Key Findings
+
+    - The overall code structure is good, but exception handling needs improvement.
+    - ...
+    ```
+
+2.  **Inline Comments**:
+    Detailed improvement suggestions or bug warnings for specific lines of code..
 
 ---
 
