@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"pr-review-automation/internal/types"
 	"strings"
+	"sync"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
@@ -22,6 +23,15 @@ import (
 type OpenAIAdapter struct {
 	client *openai.Client
 	model  string
+	mu     sync.Mutex
+}
+
+// NewOpenAIAdapter creates a new OpenAI adapter
+func NewOpenAIAdapter(client *openai.Client, model string) *OpenAIAdapter {
+	return &OpenAIAdapter{
+		client: client,
+		model:  model,
+	}
 }
 
 // Name returns the model name
@@ -50,6 +60,8 @@ func (a *OpenAIAdapter) Ping(ctx context.Context) error {
 // GenerateContent generates content using OpenAI
 func (a *OpenAIAdapter) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
 		slog.Debug("llm request", "model", a.model, "stream", stream, "messages", len(req.Contents))
 
 		// 1. Convert Messages
@@ -91,7 +103,24 @@ func (a *OpenAIAdapter) GenerateContent(ctx context.Context, req *model.LLMReque
 					OfJSONObject: &val,
 				}
 			}
-			// Future: Handle other config options like Temperature, MaxOutputTokens etc.
+
+			// Handle System Instruction
+			if req.Config.SystemInstruction != nil {
+				sysMsg := ""
+				for _, p := range req.Config.SystemInstruction.Parts {
+					if p.Text != "" {
+						sysMsg += p.Text
+					}
+				}
+				if sysMsg != "" {
+					// Prepend system message
+					newMessages := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages)+1)
+					newMessages = append(newMessages, openai.SystemMessage(sysMsg))
+					newMessages = append(newMessages, messages...)
+					messages = newMessages
+					params.Messages = messages // Update params
+				}
+			}
 		}
 
 		// 4. Execute
@@ -117,6 +146,7 @@ func (a *OpenAIAdapter) handleUnary(ctx context.Context, params openai.ChatCompl
 	}
 
 	choice := resp.Choices[0]
+	slog.Debug("llm response choice", "content", choice.Message.Content, "tool_calls", len(choice.Message.ToolCalls))
 	llmResp, err := a.convertResponse(choice.Message)
 	if err != nil {
 		yield(nil, fmt.Errorf("convert response: %w", err))
@@ -236,6 +266,9 @@ func (a *OpenAIAdapter) convertMessages(contents []*genai.Content) ([]openai.Cha
 			role = "user"
 		}
 
+		// DEBUG: Log role and parts info
+		slog.Debug("convertMessages", "original_role", c.Role, "mapped_role", role, "parts_count", len(c.Parts))
+
 		var textParts []string
 		var toolCallParts []*genai.FunctionCall
 		var toolResponseParts []*genai.FunctionResponse
@@ -259,7 +292,27 @@ func (a *OpenAIAdapter) convertMessages(contents []*genai.Content) ([]openai.Cha
 
 		switch role {
 		case "user":
-			messages = append(messages, openai.UserMessage(text))
+			// ADK wraps tool responses as "user" role with FunctionResponse parts
+			// Check for tool responses first
+			if len(toolResponseParts) > 0 {
+				for _, tr := range toolResponseParts {
+					contentJSON, err := json.Marshal(tr.Response)
+					if err != nil {
+						slog.Warn("marshal response failed", "name", tr.Name, "error", err)
+						contentJSON = []byte("{}")
+					}
+					toolCallID := tr.ID
+					if toolCallID == "" {
+						toolCallID = "call_" + tr.Name
+					}
+					if toolCallID != "" {
+						messages = append(messages, openai.ToolMessage(string(contentJSON), toolCallID))
+					}
+				}
+			} else {
+				// Regular user message
+				messages = append(messages, openai.UserMessage(text))
+			}
 		case "assistant":
 			// Assistant message can have text AND tool calls
 			msg := openai.AssistantMessage(text)
@@ -388,6 +441,7 @@ func (a *OpenAIAdapter) convertResponse(msg openai.ChatCompletionMessage) (*mode
 			FunctionCall: &genai.FunctionCall{
 				Name: tc.Function.Name,
 				Args: args,
+				ID:   tc.ID, // Preserve OpenAI Tool Call ID
 			},
 		})
 	}
@@ -416,6 +470,9 @@ func (a *OpenAIAdapter) SimpleTextQuery(ctx context.Context, systemPrompt, userI
 		Model:    shared.ChatModel(a.model),
 		Messages: messages,
 	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	resp, err := a.client.Chat.Completions.New(ctx, params)
 	if err != nil {

@@ -75,7 +75,7 @@ func TestMCPClient_Lifecycle_Decoupling(t *testing.T) {
 
 	// Mock transport factory
 	transportCtxChan := make(chan context.Context, 1)
-	client.SetTransportFactory(func(ctx context.Context, endpoint, token string) (mcp.Transport, error) {
+	client.SetTransportFactory(func(ctx context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
 		transportCtxChan <- ctx
 		return &MockTransport{}, nil
 	})

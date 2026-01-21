@@ -1,0 +1,660 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"pr-review-automation/internal/agent"
+	"pr-review-automation/internal/client"
+	"pr-review-automation/internal/config"
+	"pr-review-automation/internal/filter/bitbucket"
+	"pr-review-automation/internal/processor"
+	"pr-review-automation/internal/webhook"
+
+	"github.com/joho/godotenv"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+
+	"iter"
+
+	"google.golang.org/adk/model"
+	"google.golang.org/genai"
+)
+
+// InterceptingTransport implements mcp.Transport
+type InterceptingTransport struct {
+	RealTransport mcp.Transport
+	CapturedOps   *[]string
+	Mu            *sync.Mutex
+}
+
+func (t *InterceptingTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	realConn, err := t.RealTransport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	ic := &InterceptingConnection{
+		inner:       realConn,
+		capturedOps: t.CapturedOps,
+		mu:          t.Mu,
+		readChan:    make(chan jsonrpc.Message),
+		errChan:     make(chan error),
+	}
+
+	// Start forwarding real responses
+	go func() {
+		for {
+			msg, err := realConn.Read(context.Background())
+			if err != nil {
+				ic.errChan <- err
+				return
+			}
+			ic.readChan <- msg
+		}
+	}()
+
+	return ic, nil
+}
+
+// InterceptingConnection implements mcp.Connection
+type InterceptingConnection struct {
+	inner       mcp.Connection
+	capturedOps *[]string
+	mu          *sync.Mutex
+
+	readChan chan jsonrpc.Message
+	errChan  chan error
+}
+
+func (c *InterceptingConnection) Close() error {
+	return c.inner.Close()
+}
+
+func (c *InterceptingConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case err := <-c.errChan:
+		return nil, err
+	case msg := <-c.readChan:
+		return msg, nil
+	}
+}
+
+func (c *InterceptingConnection) Write(ctx context.Context, message jsonrpc.Message) error {
+	// Type assertion to access Request fields
+	var req *jsonrpc.Request
+
+	switch m := message.(type) {
+	case *jsonrpc.Request:
+		req = m
+	}
+
+	if req != nil && req.Method == "tools/call" {
+		var params struct {
+			Name      string                 `json:"name"`
+			Arguments map[string]interface{} `json:"arguments"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err == nil {
+			if params.Name == "bitbucket_add_pull_request_comment" {
+				c.mu.Lock()
+				op := fmt.Sprintf("Comment on %v: %v", params.Arguments["pullRequestId"], params.Arguments["commentText"])
+				*c.capturedOps = append(*c.capturedOps, op)
+				c.mu.Unlock()
+
+				fmt.Printf("\n[InterceptingTransport] Captured Comment Write:\nMethod: %s\nParams: %s\n", req.Method, string(req.Params))
+
+				// Inject Mock Success Response
+				resultJSON := `{"content": [{"type": "text", "text": "{\"id\": 12345, \"version\": 1}"}]}`
+				resp := &jsonrpc.Response{
+					ID:     req.ID,
+					Result: json.RawMessage(resultJSON),
+				}
+				go func() { c.readChan <- resp }()
+				return nil
+			}
+
+		}
+	}
+
+	return c.inner.Write(ctx, message)
+}
+
+func (c *InterceptingConnection) SessionID() string {
+	return c.inner.SessionID()
+}
+
+func TestE2E_PRFlow(t *testing.T) {
+	// 1. Load Environment & Config (Real Config)
+	rootDir := "../../"
+	if err := godotenv.Load(filepath.Join(rootDir, ".env")); err != nil {
+		t.Logf("Warning: .env file not found at %s: %v", rootDir, err)
+	}
+
+	os.Setenv("CONFIG_PATH", filepath.Join(rootDir, "config.test.yaml"))
+	cfg := config.LoadConfig()
+	cfg.Prompts.Dir = filepath.Join(rootDir, "prompts")
+
+	if cfg.LLM.APIKey == "" {
+		t.Skip("Skipping E2E test: LLM_API_KEY not set")
+	}
+	if cfg.MCP.Bitbucket.Endpoint == "" {
+		t.Skip("Skipping E2E review: Bitbucket endpoint not configured")
+	}
+
+	// 2. Setup Intercepting Client
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	mcpClient := client.NewMCPClient(cfg)
+
+	// [FIX] Inject Response Filter (Same as production)
+	bbResponseFilter := bitbucket.NewResponseFilter()
+	mcpClient.SetResponseFilter("bitbucket", bbResponseFilter)
+
+	capturedOps := []string{}
+	var mu sync.Mutex
+
+	mcpClient.SetTransportFactory(func(ctx context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
+		t.Logf("[DEBUG] Creating transport for endpoint=%s, tokenLen=%d, authHeader=%s", endpoint, len(token), authHeader)
+		realTransport, err := client.NewMCPTransport(ctx, endpoint, token, authHeader)
+		if err != nil {
+			return nil, err
+		}
+		return &InterceptingTransport{
+			RealTransport: realTransport,
+			CapturedOps:   &capturedOps,
+			Mu:            &mu,
+		}, nil
+	})
+
+	if err := mcpClient.InitializeConnections(); err != nil {
+		t.Fatalf("Failed to initialize MCP connections: %v", err)
+	}
+	defer mcpClient.Close()
+
+	// 3. Real Agent & Dependencies
+	oaClient := openai.NewClient(option.WithAPIKey(cfg.LLM.APIKey), option.WithBaseURL(cfg.LLM.Endpoint))
+	llm := client.NewOpenAIAdapter(&oaClient, cfg.LLM.Model)
+	promptLoader := agent.NewPromptLoader(cfg.Prompts.Dir)
+
+	// Create Agent - using Model from config
+	prAgent, err := agent.NewPRReviewAgent(llm, mcpClient, promptLoader, cfg.LLM.Model, cfg.Agent)
+	if err != nil {
+		t.Fatalf("Failed to create Agent: %v", err)
+	}
+
+	prProcessor := processor.NewPRProcessor(prAgent, mcpClient, nil)
+	bbFilter := bitbucket.NewPayloadFilter()
+	parser := webhook.NewPayloadParser(llm, promptLoader, bbFilter)
+	handler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, parser)
+
+	// 4. Send Real Payload (User Provided - Corrected)
+	reqBody := `{
+    "date": "2026-01-20T09:45:01+0100",
+    "actor": {
+        "emailAddress": "tangyong@navinfo.com",
+        "displayName": "Tang Yong",
+        "name": "tang.yong",
+        "active": true,
+        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/tang.yong"}]},
+        "id": 220,
+        "type": "NORMAL",
+        "slug": "tang.yong"
+    },
+    "eventKey": "pr:opened",
+    "pullRequest": {
+        "author": {
+            "approved": false,
+            "role": "AUTHOR",
+            "user": {
+                "emailAddress": "tangyong@navinfo.com",
+                "displayName": "Tang Yong",
+                "name": "tang.yong",
+                "active": true,
+                "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/tang.yong"}]},
+                "id": 220,
+                "type": "NORMAL",
+                "slug": "tang.yong"
+            },
+            "status": "UNAPPROVED"
+        },
+        "description": "* HAD-10941 imp LaneTransitionGeneration\n* HAD-10941 add unit test",
+        "updatedDate": 1768898701638,
+        "title": "HAD-10941 fastmap adbuy pbd generate lane transitions",
+        "version": 0,
+        "reviewers": [{
+            "approved": false,
+            "role": "REVIEWER",
+            "user": {
+                "emailAddress": "songqin4178@navinfo.com",
+                "displayName": "Song Qin (Maya)",
+                "name": "song.qin",
+                "active": true,
+                "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/song.qin"}]},
+                "id": 513,
+                "type": "NORMAL",
+                "slug": "song.qin"
+            },
+            "status": "UNAPPROVED"
+        }],
+        "toRef": {
+            "latestCommit": "de01077b0c28aa1a373d19d07d424d06c4a90d59",
+            "id": "refs/heads/controlled/Toolkit",
+            "displayId": "controlled/Toolkit",
+            "type": "BRANCH",
+            "repository": {
+                "archived": false,
+                "public": false,
+                "hierarchyId": "bcbf91974885516f2579",
+                "name": "Toolkit",
+                "forkable": true,
+                "project": {
+                    "public": false,
+                    "name": "FastMap",
+                    "description": "DDS",
+                    "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS"}]},
+                    "id": 3283,
+                    "type": "NORMAL",
+                    "key": "FAS"
+                },
+                "links": {
+                    "clone": [
+                        {
+                            "name": "ssh",
+                            "href": "ssh://git@ssh.bitbucket.cms.navinfo.cloud:7999/fas/toolkit.git"
+                        },
+                        {
+                            "name": "http",
+                            "href": "https://bitbucket.cms.navinfo.cloud/scm/fas/toolkit.git"
+                        }
+                    ],
+                    "self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/browse"}]
+                },
+                "id": 4764,
+                "scmId": "git",
+                "state": "AVAILABLE",
+                "slug": "toolkit",
+                "statusMessage": "Available"
+            }
+        },
+        "createdDate": 1768898701638,
+        "draft": false,
+        "closed": false,
+        "fromRef": {
+            "latestCommit": "cc6939ddbb7998ad56ed00b0ede211cffded52ea",
+            "id": "refs/heads/HAD-10941-fastmap-adbuy-pbd-generate-lane-transitions",
+            "displayId": "HAD-10941-fastmap-adbuy-pbd-generate-lane-transitions",
+            "type": "BRANCH",
+            "repository": {
+                "archived": false,
+                "public": false,
+                "hierarchyId": "bcbf91974885516f2579",
+                "name": "Toolkit",
+                "forkable": true,
+                "project": {
+                    "public": false,
+                    "name": "FastMap",
+                    "description": "DDS",
+                    "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS"}]},
+                    "id": 3283,
+                    "type": "NORMAL",
+                    "key": "FAS"
+                },
+                "links": {
+                    "clone": [
+                        {
+                            "name": "ssh",
+                            "href": "ssh://git@ssh.bitbucket.cms.navinfo.cloud:7999/fas/toolkit.git"
+                        },
+                        {
+                            "name": "http",
+                            "href": "https://bitbucket.cms.navinfo.cloud/scm/fas/toolkit.git"
+                        }
+                    ],
+                    "self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/browse"}]
+                },
+                "id": 4764,
+                "scmId": "git",
+                "state": "AVAILABLE",
+                "slug": "toolkit",
+                "statusMessage": "Available"
+            }
+        },
+        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/pull-requests/66"}]},
+        "id": 66,
+        "state": "OPEN",
+        "locked": false,
+        "open": true,
+        "participants": []
+    }
+}`
+
+	req := httptest.NewRequest(http.MethodPost, "http://192.168.30.20:8080/webhook", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("X-Event-Key", "pr:opened")
+	req.Header.Set("X-Request-Id", "b4742057-7bef-468c-8bff-a2122e0f4112")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != 200 {
+		t.Errorf("Expected 200 OK")
+	}
+
+	logger.Info("Waiting for async processing...")
+	// We need to wait enough time for real network calls
+	// Using the handler's wait mechanism if available, or just sleep
+	// handler.WaitForCompletion() is not standard, let's poll or wait
+	// Actually, the original code had WaitForCompletion because it was using a specialized handler or mock?
+	// The current code calls handler.WaitForCompletion() which implies I added it to the handler?
+	// Let's check internal/webhook/bitbucket.go.
+	// If it doesn't have it, I should add a way to wait or just sleep.
+	// For E2E with real network, 30s might be needed.
+
+	done := make(chan bool)
+	go func() {
+		handler.WaitForCompletion()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		logger.Info("Processing completed")
+	case <-time.After(300 * time.Second):
+		t.Log("Timeout waiting for processing")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(capturedOps) > 0 {
+		t.Logf("Success! Intercepted %d write operations", len(capturedOps))
+	} else {
+		t.Logf("No write operations captured. Check logs.")
+	}
+}
+
+// MockLLM defines a mock LLM for testing
+type MockLLM struct {
+	Response string
+}
+
+func (m *MockLLM) Name() string {
+	return "mock-llm"
+}
+
+func (m *MockLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, streaming bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		yield(&model.LLMResponse{
+			Content: &genai.Content{
+				Parts: []*genai.Part{{Text: m.Response}},
+			},
+		}, nil)
+	}
+}
+
+func TestE2E_ChunkedReview(t *testing.T) {
+	// 1. Load Environment & Config
+	rootDir := "../../"
+	if err := godotenv.Load(filepath.Join(rootDir, ".env")); err != nil {
+		t.Logf("Warning: .env file not found at %s: %v", rootDir, err)
+	}
+
+	os.Setenv("CONFIG_PATH", filepath.Join(rootDir, "config.test.yaml"))
+	cfg := config.LoadConfig()
+	cfg.Prompts.Dir = filepath.Join(rootDir, "prompts")
+
+	// Respect config.test.yaml for chunking parameters
+	cfg.Agent.MaxIterations = 20
+	// Ensure serial execution as requested
+	cfg.Agent.ChunkReview.ParallelChunks = 1
+
+	if cfg.LLM.APIKey == "" {
+		t.Skip("Skipping E2E test: LLM_API_KEY not set")
+	}
+	if cfg.MCP.Bitbucket.Endpoint == "" {
+		t.Skip("Skipping E2E review: Bitbucket endpoint not configured")
+	}
+
+	// 2. Setup Intercepting Client
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	mcpClient := client.NewMCPClient(cfg)
+	bbResponseFilter := bitbucket.NewResponseFilter()
+	mcpClient.SetResponseFilter("bitbucket", bbResponseFilter)
+
+	capturedOps := []string{}
+	var mu sync.Mutex
+
+	mcpClient.SetTransportFactory(func(ctx context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
+		t.Logf("[DEBUG] Creating transport for endpoint=%s", endpoint)
+		realTransport, err := client.NewMCPTransport(ctx, endpoint, token, authHeader)
+		if err != nil {
+			return nil, err
+		}
+		return &InterceptingTransport{
+			RealTransport: realTransport,
+			CapturedOps:   &capturedOps,
+			Mu:            &mu,
+		}, nil
+	})
+
+	if err := mcpClient.InitializeConnections(); err != nil {
+		t.Fatalf("Failed to initialize MCP connections: %v", err)
+	}
+	defer mcpClient.Close()
+
+	// 3. Real Agent & Dependencies (Real Data)
+	llm, err := client.NewLLM(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create LLM: %v", err)
+	}
+	promptLoader := agent.NewPromptLoader(cfg.Prompts.Dir)
+
+	prAgent, err := agent.NewPRReviewAgent(llm, mcpClient, promptLoader, cfg.LLM.Model, cfg.Agent)
+	if err != nil {
+		t.Fatalf("Failed to create Agent: %v", err)
+	}
+
+	prProcessor := processor.NewPRProcessor(prAgent, mcpClient, nil)
+	bbFilter := bitbucket.NewPayloadFilter()
+	parser := webhook.NewPayloadParser(llm, promptLoader, bbFilter)
+	handler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, parser)
+
+	// 4. Send Payload (REAL DATA FROM USER)
+	reqBody := `{
+    "date": "2026-01-20T09:45:01+0100",
+    "actor": {
+        "emailAddress": "tangyong@navinfo.com",
+        "displayName": "Tang Yong",
+        "name": "tang.yong",
+        "active": true,
+        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/tang.yong"}]},
+        "id": 220,
+        "type": "NORMAL",
+        "slug": "tang.yong"
+    },
+    "eventKey": "pr:opened",
+    "pullRequest": {
+        "author": {
+            "approved": false,
+            "role": "AUTHOR",
+            "user": {
+                "emailAddress": "tangyong@navinfo.com",
+                "displayName": "Tang Yong",
+                "name": "tang.yong",
+                "active": true,
+                "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/tang.yong"}]},
+                "id": 220,
+                "type": "NORMAL",
+                "slug": "tang.yong"
+            },
+            "status": "UNAPPROVED"
+        },
+        "description": "* HAD-10941 imp LaneTransitionGeneration\n* HAD-10941 add unit test",
+        "updatedDate": 1768898701638,
+        "title": "HAD-10941 fastmap adbuy pbd generate lane transitions",
+        "version": 0,
+        "reviewers": [{
+            "approved": false,
+            "role": "REVIEWER",
+            "user": {
+                "emailAddress": "songqin4178@navinfo.com",
+                "displayName": "Song Qin (Maya)",
+                "name": "song.qin",
+                "active": true,
+                "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/song.qin"}]},
+                "id": 513,
+                "type": "NORMAL",
+                "slug": "song.qin"
+            },
+            "status": "UNAPPROVED"
+        }],
+        "toRef": {
+            "latestCommit": "de01077b0c28aa1a373d19d07d424d06c4a90d59",
+            "id": "refs/heads/controlled/Toolkit",
+            "displayId": "controlled/Toolkit",
+            "type": "BRANCH",
+            "repository": {
+                "archived": false,
+                "public": false,
+                "hierarchyId": "bcbf91974885516f2579",
+                "name": "Toolkit",
+                "forkable": true,
+                "project": {
+                    "public": false,
+                    "name": "FastMap",
+                    "description": "DDS",
+                    "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS"}]},
+                    "id": 3283,
+                    "type": "NORMAL",
+                    "key": "FAS"
+                },
+                "links": {
+                    "clone": [
+                        {
+                            "name": "ssh",
+                            "href": "ssh://git@ssh.bitbucket.cms.navinfo.cloud:7999/fas/toolkit.git"
+                        },
+                        {
+                            "name": "http",
+                            "href": "https://bitbucket.cms.navinfo.cloud/scm/fas/toolkit.git"
+                        }
+                    ],
+                    "self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/browse"}]
+                },
+                "id": 4764,
+                "scmId": "git",
+                "state": "AVAILABLE",
+                "slug": "toolkit",
+                "statusMessage": "Available"
+            }
+        },
+        "createdDate": 1768898701638,
+        "draft": false,
+        "closed": false,
+        "fromRef": {
+            "latestCommit": "cc6939ddbb7998ad56ed00b0ede211cffded52ea",
+            "id": "refs/heads/HAD-10941-fastmap-adbuy-pbd-generate-lane-transitions",
+            "displayId": "HAD-10941-fastmap-adbuy-pbd-generate-lane-transitions",
+            "type": "BRANCH",
+            "repository": {
+                "archived": false,
+                "public": false,
+                "hierarchyId": "bcbf91974885516f2579",
+                "name": "Toolkit",
+                "forkable": true,
+                "project": {
+                    "public": false,
+                    "name": "FastMap",
+                    "description": "DDS",
+                    "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS"}]},
+                    "id": 3283,
+                    "type": "NORMAL",
+                    "key": "FAS"
+                },
+                "links": {
+                    "clone": [
+                        {
+                            "name": "ssh",
+                            "href": "ssh://git@ssh.bitbucket.cms.navinfo.cloud:7999/fas/toolkit.git"
+                        },
+                        {
+                            "name": "http",
+                            "href": "https://bitbucket.cms.navinfo.cloud/scm/fas/toolkit.git"
+                        }
+                    ],
+                    "self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/browse"}]
+                },
+                "id": 4764,
+                "scmId": "git",
+                "state": "AVAILABLE",
+                "slug": "toolkit",
+                "statusMessage": "Available"
+            }
+        },
+        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/pull-requests/66"}]},
+        "id": 66,
+        "state": "OPEN",
+        "locked": false,
+        "open": true,
+        "participants": []
+    }
+}`
+
+	req := httptest.NewRequest(http.MethodPost, "http://192.168.30.20:8080/webhook", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("X-Event-Key", "pr:opened")
+	req.Header.Set("X-Request-Id", "test-chunk-review")
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != 200 {
+		t.Errorf("Expected 200 OK, got %d", w.Result().StatusCode)
+	}
+
+	logger.Info("Waiting for async processing...")
+
+	done := make(chan bool)
+	go func() {
+		handler.WaitForCompletion()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		logger.Info("Processing completed")
+	case <-time.After(900 * time.Second):
+		t.Log("Timeout waiting for processing")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(capturedOps) > 0 {
+		t.Logf("Success! Intercepted %d write operations:", len(capturedOps))
+		for i, op := range capturedOps {
+			t.Logf("Op[%d]: %s", i, op)
+		}
+	} else {
+		t.Logf("No write operations captured. Check logs.")
+	}
+}

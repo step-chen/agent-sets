@@ -124,8 +124,8 @@ func (h *BitbucketWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 				return
 			}
 
-			// Use context with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			// Use context with timeout - Increased to 15m to handle up to 10 tool calls + LLM latency
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
 
 			// Parse Payload using Robust Parser

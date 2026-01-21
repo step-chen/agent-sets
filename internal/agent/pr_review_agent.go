@@ -6,12 +6,17 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"pr-review-automation/internal/aggregator"
 	"pr-review-automation/internal/client"
+	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
+	"pr-review-automation/internal/splitter"
 	"pr-review-automation/internal/types"
 
 	"github.com/tidwall/gjson"
@@ -31,6 +36,7 @@ type PRReviewAgent struct {
 	mcpClient      *client.MCPClient
 	promptLoader   *PromptLoader
 	modelName      string
+	cfg            config.AgentConfig
 }
 
 // ReviewResult represents the result of a PR review
@@ -57,7 +63,7 @@ type ReviewComment struct {
 }
 
 // NewPRReviewAgent creates a new PR review agent factory
-func NewPRReviewAgent(llm model.LLM, mcpClient *client.MCPClient, promptLoader *PromptLoader, modelName string) (*PRReviewAgent, error) {
+func NewPRReviewAgent(llm model.LLM, mcpClient *client.MCPClient, promptLoader *PromptLoader, modelName string, agentCfg config.AgentConfig) (*PRReviewAgent, error) {
 	// Validation of dependencies
 	if llm == nil {
 		return nil, fmt.Errorf("llm is nil")
@@ -69,30 +75,45 @@ func NewPRReviewAgent(llm model.LLM, mcpClient *client.MCPClient, promptLoader *
 		return nil, fmt.Errorf("prompt loader is nil")
 	}
 
+	// Apply defaults
+	if agentCfg.MaxIterations <= 0 {
+		agentCfg.MaxIterations = 20
+	}
+	if agentCfg.MaxToolCalls <= 0 {
+		agentCfg.MaxToolCalls = 50
+	}
+
 	return &PRReviewAgent{
 		llm:            llm,
 		sessionService: session.InMemoryService(),
 		mcpClient:      mcpClient,
 		promptLoader:   promptLoader,
 		modelName:      modelName,
+		cfg:            agentCfg,
 	}, nil
 }
 
-// ReviewPR processes a pull request using a fresh ADK agent instance
+// ReviewPR orchestrates the PR review process
 func (pra *PRReviewAgent) ReviewPR(ctx context.Context, req *ReviewRequest) (*ReviewResult, error) {
-	pr := req.PR // convenience
+	slog.Info("Starting PR review", "pr_id", req.PR.ID)
+
+	// Check if chunked review is enabled
+	if pra.cfg.ChunkReview.Enabled {
+		// Attempt to use chunked review strategy
+		return pra.reviewPRChunked(ctx, req)
+	}
+
+	return pra.reviewPRStandard(ctx, req)
+}
+
+// reviewPRStandard performs the standard single-pass review
+func (pra *PRReviewAgent) reviewPRStandard(ctx context.Context, req *ReviewRequest) (*ReviewResult, error) {
+	pr := req.PR
 	start := time.Now()
-	metricResult := "error" // Default to error, changed to success on success path
+	metricResult := "error"
 	defer func() {
 		metrics.ProcessingDuration.WithLabelValues(metricResult).Observe(time.Since(start).Seconds())
 	}()
-
-	slog.Debug("Starting PR review",
-		"repository", pr.RepoSlug,
-		"pr_id", pr.ID,
-		"title", pr.Title,
-		"author", pr.Author,
-	)
 
 	// 1. Get FRESH Toolsets
 	toolsets := pra.mcpClient.GetToolsets()
@@ -100,9 +121,7 @@ func (pra *PRReviewAgent) ReviewPR(ctx context.Context, req *ReviewRequest) (*Re
 		slog.Warn("no mcp toolsets available")
 	}
 
-	// 2. Load prompt (project from PR, language detection TBD)
 	// 2. Load prompt (project from PR, language detection)
-	// Detect primary language from changed files
 	language := "default"
 	if changedFiles := pra.fetchChangedFiles(ctx, pr); len(changedFiles) > 0 {
 		language = DetectLanguage(changedFiles)
@@ -113,72 +132,260 @@ func (pra *PRReviewAgent) ReviewPR(ctx context.Context, req *ReviewRequest) (*Re
 		return nil, fmt.Errorf("load prompt: %w", err)
 	}
 
-	// 3. Create Ephemeral Agent
-	agentConfig := llmagent.Config{
-		Name:        "pr-review-agent-" + pr.ID,
-		Description: "Ephemeral PR review agent",
-		Model:       &jsonLLM{LLM: pra.llm},
-		Instruction: instruction,
-		Toolsets:    toolsets,
-	}
-
-	adkAgent, err := llmagent.New(agentConfig)
+	// 3. Create Ephemeral Agent Configuration
+	adkAgent, err := llmagent.New(
+		llmagent.Config{
+			Name:        "pr-review-agent-" + pr.ID,
+			Description: "Ephemeral PR review agent",
+			Model:       &jsonLLM{LLM: pra.llm},
+			Instruction: instruction,
+			Toolsets:    toolsets,
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
 
-	slog.Debug("agent created", "toolsets", len(toolsets))
-
 	// Convert PR info to a prompt
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(`Please review the following pull request:
+	sb.WriteString(fmt.Sprintf(`Review PR #%v in %v/%v
 
-Repository: %v
-Pull Request ID: %v
 Title: %v
-Description: %v
+Desc: %v
 Author: %v
-
+LatestCommit: %v
 `,
-		pr.RepoSlug,
 		pr.ID,
+		pr.ProjectKey,
+		pr.RepoSlug,
 		pr.Title,
 		pr.Description,
 		pr.Author,
+		pr.LatestCommit,
 	))
 
 	// Inject historical comments for deduplication
 	if len(req.HistoricalComments) > 0 {
-		sb.WriteString("## Existing AI Comments (DO NOT DUPLICATE)\n")
-		sb.WriteString("The following comments were already posted by previous AI reviews. **DO NOT** duplicate these issues.\n")
-		sb.WriteString("If an issue is listed below, assume it is already known. Only report NEW issues or if you verify the issue is fixed (mention repair in summary).\n\n")
+		sb.WriteString("## Known Issues (DO NOT DUPLICATE)\n")
 		for _, c := range req.HistoricalComments {
-			sb.WriteString(fmt.Sprintf("- [%s:%d] %s\n", c.File, c.Line, c.Comment))
+			truncatedComment := c.Comment
+			if len(truncatedComment) > 50 {
+				truncatedComment = truncatedComment[:50] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("- %s:%d %s\n", c.File, c.Line, truncatedComment))
 		}
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(`Analyze the changes and provide feedback on code quality, potential bugs, and adherence to best practices. 
-You MUST use the provided tools to fetch the changed files and their diffs/content to perform the review. 
-Do not guess the content. 
-Also check if the changes align with any related Jira issues and follow Confluence documentation standards. 
+	sb.WriteString("Fetch diff and review. Check related Jira if ticket ID in title. Output JSON only.")
 
-Return your response in the following JSON format ONLY, do not include markdown formatting:
-{
-  "comments": [
-    {
-      "file": "filename.ext",
-      "line": 123,
-      "comment": "Detailed feedback about the code at this location"
-    }
-  ],
-  "score": 85,
-  "summary": "Overall assessment of the pull request"
-}`)
+	result, err := pra.executeAgent(ctx, adkAgent, sb.String(), pr)
+	if err == nil {
+		metricResult = "success"
+		metrics.PullRequestTotal.WithLabelValues("success").Inc()
+	}
+	return result, err
+}
 
-	prompt := sb.String()
+// reviewPRChunked performs review by splitting diff into chunks
+func (pra *PRReviewAgent) reviewPRChunked(ctx context.Context, req *ReviewRequest) (*ReviewResult, error) {
+	pr := req.PR
+	start := time.Now()
+	metricResult := "error"
+	defer func() {
+		metrics.ProcessingDuration.WithLabelValues(metricResult).Observe(time.Since(start).Seconds())
+	}()
 
-	// Create a runner
+	// 1. Fetch full diff manually (bypass Agent tool loop for this step)
+	prID, _ := strconv.Atoi(pr.ID)
+	args := map[string]interface{}{
+		"projectKey":    pr.ProjectKey,
+		"repoSlug":      pr.RepoSlug,
+		"pullRequestId": prID,
+	}
+	diffResult, err := pra.mcpClient.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_diff", args)
+	if err != nil {
+		slog.Error("failed to fetch diff for splitting", "error", err)
+		return pra.reviewPRStandard(ctx, req)
+	}
+	slog.Info("Fetched diff for splitting", "type", fmt.Sprintf("%T", diffResult))
+
+	// Handle different result types from CallTool
+	var diffStr string
+	if s, ok := diffResult.(string); ok {
+		diffStr = s
+	} else {
+		// Fallback: marshal to JSON and query using gjson
+		// This handles map[string]interface{} and *mcp.CallToolResult struct
+		b, err := json.Marshal(diffResult)
+		if err == nil {
+			diffStr = gjson.GetBytes(b, "content.0.text").String()
+			if diffStr == "" {
+				diffStr = gjson.GetBytes(b, "output").String()
+			}
+		}
+	}
+
+	if diffStr == "" {
+		slog.Warn("diff result is not a string or empty", "type", fmt.Sprintf("%T", diffResult), "value", fmt.Sprintf("%#v", diffResult))
+		return pra.reviewPRStandard(ctx, req)
+	}
+
+	// 2. Split diff
+	sp := splitter.NewDiffSplitter(pra.cfg.ChunkReview.MaxTokensPerChunk, pra.cfg.ChunkReview.MaxFilesPerChunk)
+	chunks := sp.Split(diffStr)
+	slog.Info("Split result", "chunks", len(chunks), "diff_bytes", len(diffStr))
+
+	if len(chunks) <= 1 {
+		slog.Info("Diff small enough for single pass", "chunks", 1)
+		return pra.reviewPRStandard(ctx, req)
+	}
+
+	slog.Info("Splitting PR into chunks", "count", len(chunks))
+
+	// 3. Parallel Execution
+	results := make([]aggregator.ChunkReviewResult, len(chunks))
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, pra.cfg.ChunkReview.ParallelChunks)
+
+	for i, chunk := range chunks {
+		wg.Add(1)
+		go func(idx int, c splitter.DiffChunk) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // Acquire
+			defer func() { <-semaphore }() // Release
+
+			res, err := pra.reviewSingleChunk(ctx, req, c)
+			results[idx] = aggregator.ChunkReviewResult{
+				ChunkID:     c.ChunkID,
+				TotalChunks: c.TotalChunks,
+				Error:       err,
+			}
+			if res != nil {
+				// Convert to aggregator.ReviewComment
+				aggComments := make([]aggregator.ReviewComment, len(res.Comments))
+				for k, rc := range res.Comments {
+					aggComments[k] = aggregator.ReviewComment{
+						File:    rc.File,
+						Line:    rc.Line,
+						Comment: rc.Comment,
+					}
+				}
+				results[idx].Comments = aggComments
+				results[idx].Score = res.Score
+				results[idx].Summary = res.Summary
+			}
+		}(i, chunk)
+	}
+
+	wg.Wait()
+
+	// 4. Aggregate results
+	agg := aggregator.NewResultAggregator()
+	finalRes := agg.Aggregate(results)
+
+	metricResult = "success"
+	metrics.PullRequestTotal.WithLabelValues("success").Inc()
+
+	// Convert back to ReviewComment
+	finalComments := make([]ReviewComment, len(finalRes.Comments))
+	for k, rc := range finalRes.Comments {
+		finalComments[k] = ReviewComment{
+			File:    rc.File,
+			Line:    rc.Line,
+			Comment: rc.Comment,
+		}
+	}
+
+	return &ReviewResult{
+		Comments: finalComments,
+		Score:    finalRes.Score,
+		Summary:  finalRes.Summary,
+		Model:    pra.modelName,
+	}, nil
+}
+
+// reviewSingleChunk reviews a specific chunk of the diff
+func (pra *PRReviewAgent) reviewSingleChunk(ctx context.Context, req *ReviewRequest, chunk splitter.DiffChunk) (*ReviewResult, error) {
+	pr := req.PR
+
+	// Initialize ADK agent
+	toolsets := pra.mcpClient.GetToolsets()
+
+	// Load prompt for this chunk
+	// We use the same language detection logic but scoped to the chunk files
+	chunkFilePaths := chunk.FileList()
+	language := DetectLanguage(chunkFilePaths)
+	instruction, err := pra.promptLoader.Load(pr.ProjectKey, language)
+	if err != nil {
+		return nil, fmt.Errorf("load prompt: %w", err)
+	}
+
+	adkAgent, err := llmagent.New(
+		llmagent.Config{
+			Name:        fmt.Sprintf("pr-review-agent-%s-chunk-%d", pr.ID, chunk.ChunkID),
+			Description: "Ephemeral PR chunk review agent",
+			Model:       &jsonLLM{LLM: pra.llm},
+			Instruction: instruction,
+			Toolsets:    toolsets,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create chunk agent: %w", err)
+	}
+
+	// Construct Chunk Specific Prompt
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Review PR #%v (Chunk %d/%d) in %v/%v\n\n",
+		pr.ID, chunk.ChunkID, chunk.TotalChunks, pr.ProjectKey, pr.RepoSlug))
+
+	sb.WriteString("## Files in this chunk:\n")
+	for _, f := range chunk.FileList() {
+		sb.WriteString(fmt.Sprintf("- %s\n", f))
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("## Diff Content (Do NOT fetch diff again, use this):\n")
+	sb.WriteString("```diff\n")
+	sb.WriteString(chunk.CombineContent())
+	sb.WriteString("\n```\n\n")
+
+	// Filter historical comments for this chunk
+	chunkFiles := make(map[string]bool)
+	for _, f := range chunk.Files {
+		chunkFiles[f.Path] = true
+	}
+
+	if len(req.HistoricalComments) > 0 {
+		hasRelevantComments := false
+		var commentsSb strings.Builder
+		commentsSb.WriteString("## Known Issues in these files (DO NOT DUPLICATE)\n")
+		for _, c := range req.HistoricalComments {
+			if chunkFiles[c.File] {
+				hasRelevantComments = true
+				truncated := c.Comment
+				if len(truncated) > 50 {
+					truncated = truncated[:50] + "..."
+				}
+				commentsSb.WriteString(fmt.Sprintf("- %s:%d %s\n", c.File, c.Line, truncated))
+			}
+		}
+		if hasRelevantComments {
+			sb.WriteString(commentsSb.String())
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("Review the code changes above. Check related Jira if ticket ID in title. Output JSON only.")
+
+	return pra.executeAgent(ctx, adkAgent, sb.String(), pr)
+}
+
+// executeAgent runs the agent loop for a given prompt
+func (pra *PRReviewAgent) executeAgent(ctx context.Context, adkAgent agent.Agent, prompt string, pr *domain.PullRequest) (*ReviewResult, error) {
+	// Unique session ID per run to avoid conflicts in parallel execution
+	sessionID := fmt.Sprintf("review-%v-%v-%d-%d", pr.RepoSlug, pr.ID, time.Now().UnixNano(), time.Now().Nanosecond())
+
 	r, err := runner.New(runner.Config{
 		AppName:        "pr-review",
 		Agent:          adkAgent,
@@ -187,9 +394,6 @@ Return your response in the following JSON format ONLY, do not include markdown 
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
-
-	// Session ID based on PR + timestamp
-	sessionID := fmt.Sprintf("review-%v-%v-%d", pr.RepoSlug, pr.ID, time.Now().UnixNano())
 
 	// Ensure session is created
 	_, err = pra.sessionService.Create(ctx, &session.CreateRequest{
@@ -201,29 +405,22 @@ Return your response in the following JSON format ONLY, do not include markdown 
 		slog.Debug("create session failed", "session_id", sessionID, "error", err)
 	}
 
-	// CLEANUP: Delete session after review completes
-	// This is critical to prevent memory leaks in InMemoryService
+	// CLEANUP: Delete session after execution
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := pra.sessionService.Delete(cleanupCtx, &session.DeleteRequest{
+		pra.sessionService.Delete(cleanupCtx, &session.DeleteRequest{
 			AppName:   "pr-review",
 			UserID:    "automation-user",
 			SessionID: sessionID,
-		}); err != nil {
-			// Log as Error (not Warn) since failed cleanup leads to memory leak
-			slog.Error("session cleanup failed",
-				"session_id", sessionID,
-				"error", err)
-			// Track potential leaks via metrics
-			metrics.PullRequestTotal.WithLabelValues("session_cleanup_failed").Inc()
-		}
+		})
 	}()
 
 	msg := &genai.Content{
 		Parts: []*genai.Part{
 			{Text: prompt},
 		},
+		Role: "user",
 	}
 
 	var finalText string
@@ -231,9 +428,13 @@ Return your response in the following JSON format ONLY, do not include markdown 
 
 	slog.Debug("running agent", "session", sessionID)
 
-	// Run the agent
+	// Run the agent loop
 	for event, err := range r.Run(ctx, "automation-user", sessionID, msg, agent.RunConfig{}) {
 		eventCount++
+		if eventCount > pra.cfg.MaxIterations {
+			return nil, fmt.Errorf("agent iteration limit exceeded (%d)", pra.cfg.MaxIterations)
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("agent exec: %w", err)
 		}
@@ -250,33 +451,37 @@ Return your response in the following JSON format ONLY, do not include markdown 
 		return nil, fmt.Errorf("no response content")
 	}
 
-	// Clean up markdown code blocks if present
+	// Clean up markdown code blocks
 	finalText = types.CleanJSONFromMarkdown(finalText)
 
-	var reviewResult ReviewResult
-	if err := json.Unmarshal([]byte(finalText), &reviewResult); err != nil {
-		slog.Error("parse json response failed", "error", err, "raw_text", finalText)
-		return &ReviewResult{
-			Score:   0,
-			Summary: "Failed to parse agent response.",
-		}, nil
+	var result ReviewResult
+	if err := json.Unmarshal([]byte(finalText), &result); err != nil {
+		// Fallback: simple JSON extraction
+		start := strings.Index(finalText, "{")
+		end := strings.LastIndex(finalText, "}")
+		if start != -1 && end != -1 && end > start {
+			if err2 := json.Unmarshal([]byte(finalText[start:end+1]), &result); err2 == nil {
+				result.Model = pra.modelName
+				return &result, nil
+			}
+		}
+		slog.Error("failed to parse agent response", "text", finalText, "error", err)
+		return nil, fmt.Errorf("invalid json response from agent: %w", err)
 	}
 
-	slog.Info("PR review completed", "score", reviewResult.Score, "summary", reviewResult.Summary)
-	metricResult = "success"
-	metrics.PullRequestTotal.WithLabelValues("success").Inc()
-
-	reviewResult.Model = pra.modelName
-	return &reviewResult, nil
+	result.Model = pra.modelName
+	return &result, nil
 }
 
 // fetchChangedFiles retrieves the list of changed file paths from the PR.
 // Returns empty slice on error (falls back to default language).
 func (pra *PRReviewAgent) fetchChangedFiles(ctx context.Context, pr *domain.PullRequest) []string {
+	// pr.ID is string, converting to int for MCP
+	prID, _ := strconv.Atoi(pr.ID)
 	result, err := pra.mcpClient.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_changes", map[string]interface{}{
 		"projectKey":    pr.ProjectKey,
 		"repoSlug":      pr.RepoSlug,
-		"pullRequestId": pr.ID,
+		"pullRequestId": prID,
 	})
 	if err != nil {
 		slog.Debug("fetch changed files failed", "error", err)

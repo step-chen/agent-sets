@@ -12,14 +12,19 @@ import (
 
 // TokenRoundTripper wraps http.RoundTripper to inject Authorization header
 type TokenRoundTripper struct {
-	Base  http.RoundTripper
-	Token string
+	Base       http.RoundTripper
+	Token      string
+	AuthHeader string
 }
 
 // RoundTrip implements http.RoundTripper
 func (t *TokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+t.Token)
+		if t.AuthHeader != "" {
+			req.Header.Set(t.AuthHeader, t.Token)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+t.Token)
+		}
 	}
 	if t.Base == nil {
 		return http.DefaultTransport.RoundTrip(req)
@@ -29,12 +34,12 @@ func (t *TokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 
 // NewMCPTransport creates mcp.Transport based on endpoint and token.
 // Supports stdio:// and http(s):// schemes.
-func NewMCPTransport(ctx context.Context, endpoint, token string) (mcp.Transport, error) {
+func NewMCPTransport(ctx context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
 	switch {
 	case strings.HasPrefix(endpoint, "stdio://"):
 		return newStdioTransport(ctx, endpoint, token)
 	case strings.HasPrefix(endpoint, "http://"), strings.HasPrefix(endpoint, "https://"):
-		return newSSETransport(ctx, endpoint, token)
+		return newSSETransport(ctx, endpoint, token, authHeader)
 	default:
 		return nil, fmt.Errorf("unsupported endpoint scheme: %s", endpoint)
 	}
@@ -55,13 +60,14 @@ func newStdioTransport(ctx context.Context, endpoint, token string) (mcp.Transpo
 	return &mcp.CommandTransport{Command: cmd}, nil
 }
 
-func newSSETransport(_ context.Context, endpoint, token string) (mcp.Transport, error) {
+func newSSETransport(_ context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
 	var httpClient *http.Client
 	if token != "" {
 		httpClient = &http.Client{
 			Transport: &TokenRoundTripper{
-				Base:  http.DefaultTransport,
-				Token: token,
+				Base:       http.DefaultTransport,
+				Token:      token,
+				AuthHeader: authHeader,
 			},
 		}
 	}

@@ -59,10 +59,10 @@ func TestOpenAIAdapter_ConvertTools_CustomInterface(t *testing.T) {
 	foundCustom := false
 
 	for _, ct := range converted {
-		name := ct.Function.Name
-		if name == "genai_tool" {
+		switch ct.Function.Name {
+		case "genai_tool":
 			foundStandard = true
-		} else if name == "custom_tool" {
+		case "custom_tool":
 			foundCustom = true
 		}
 	}

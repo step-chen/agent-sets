@@ -17,12 +17,13 @@ import (
 	"google.golang.org/genai"
 
 	"pr-review-automation/internal/config"
+	"pr-review-automation/internal/filter"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/types"
 )
 
 // TransportFactory creates a new transport
-type TransportFactory func(ctx context.Context, endpoint, token string) (mcp.Transport, error)
+type TransportFactory func(ctx context.Context, endpoint, token, authHeader string) (mcp.Transport, error)
 
 // circuitState represents the state of a circuit breaker for a single MCP server
 type circuitState struct {
@@ -43,15 +44,16 @@ func (cs *circuitState) isOpen() bool {
 type MCPClient struct {
 	cfg              *config.Config
 	transports       map[string]mcp.Transport
-	toolsets         map[string]tool.Toolset  // Native toolsets
-	endpoints        map[string]endpointInfo  // Store endpoint info for reconnection
-	stale            map[string]bool          // Track stale connections
-	circuits         map[string]*circuitState // Circuit breaker state per server
-	mu               sync.RWMutex             // Thread-safe access
-	transportFactory TransportFactory         // Factory for creating transports (injectable for testing)
-	requestGroup     singleflight.Group       // Singleflight group for coalescing reconnections
-	baseCtx          context.Context          // Lifecycle context for the client and its transports
-	cancel           context.CancelFunc       // Cancel function to cleanup resources on Close
+	toolsets         map[string]tool.Toolset          // Native toolsets
+	endpoints        map[string]endpointInfo          // Store endpoint info for reconnection
+	stale            map[string]bool                  // Track stale connections
+	circuits         map[string]*circuitState         // Circuit breaker state per server
+	responseFilters  map[string]filter.ResponseFilter // [NEW] Response filters per server
+	mu               sync.RWMutex                     // Thread-safe access
+	transportFactory TransportFactory                 // Factory for creating transports (injectable for testing)
+	requestGroup     singleflight.Group               // Singleflight group for coalescing reconnections
+	baseCtx          context.Context                  // Lifecycle context for the client and its transports
+	cancel           context.CancelFunc               // Cancel function to cleanup resources on Close
 }
 
 // SetTransportFactory allows tests to inject a mock transport factory
@@ -59,6 +61,16 @@ func (c *MCPClient) SetTransportFactory(tf TransportFactory) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.transportFactory = tf
+}
+
+// SetResponseFilter sets a response filter for a specific server (provider)
+func (c *MCPClient) SetResponseFilter(serverName string, f filter.ResponseFilter) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.responseFilters == nil {
+		c.responseFilters = make(map[string]filter.ResponseFilter)
+	}
+	c.responseFilters[serverName] = f
 }
 
 // Circuit breaker constants
@@ -71,6 +83,7 @@ const (
 type endpointInfo struct {
 	endpoint     string
 	token        string
+	authHeader   string   // Header name for token
 	allowedTools []string // Whitelist of tool names to expose
 }
 
@@ -102,6 +115,7 @@ func (c *MCPClient) InitializeConnections() error {
 		c.endpoints[name] = endpointInfo{
 			endpoint:     serverCfg.Endpoint,
 			token:        serverCfg.Token,
+			authHeader:   serverCfg.AuthHeader,
 			allowedTools: serverCfg.AllowedTools,
 		}
 		c.mu.Unlock()
@@ -298,7 +312,7 @@ func (c *MCPClient) reconnect(name string, logger *slog.Logger) (tool.Toolset, e
 
 	// Create new transport via factory
 	// Use c.baseCtx to bind transport lifecycle to the client, not the request
-	transport, err := c.transportFactory(c.baseCtx, info.endpoint, info.token)
+	transport, err := c.transportFactory(c.baseCtx, info.endpoint, info.token, info.authHeader)
 	if err != nil {
 		return nil, fmt.Errorf("create transport %s: %w", name, err)
 	}
@@ -481,6 +495,7 @@ func (t *RetryTool) ProcessRequest(ctx tool.Context, req *model.LLMRequest) erro
 
 // Run executes the tool with retry logic
 func (t *RetryTool) Run(ctx tool.Context, args any) (map[string]any, error) {
+	slog.Debug("executing tool", "server", t.serverName, "tool", t.toolName, "args", args)
 	maxAttempts := t.client.cfg.MCP.Retry.Attempts
 	if maxAttempts <= 0 {
 		maxAttempts = 1
@@ -506,6 +521,22 @@ func (t *RetryTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		result, err := runnable.Run(ctx, args)
 		if err == nil {
 			metrics.MCPToolCalls.WithLabelValues(t.serverName, t.toolName, "success").Inc()
+
+			// Apply Response Filter
+			t.client.mu.RLock()
+			filter := t.client.responseFilters[t.serverName]
+			t.client.mu.RUnlock()
+
+			if filter != nil {
+				// Result is map[string]any, we treat it as any for the filter interface
+				filtered := filter.Filter(t.toolName, result)
+				if asMap, ok := filtered.(map[string]any); ok {
+					return asMap, nil
+				}
+				// If filter returns something else (shouldn't happen for map), return original
+				slog.Warn("response filter returned non-map", "tool", t.toolName, "type", fmt.Sprintf("%T", filtered))
+			}
+
 			return result, nil
 		}
 

@@ -35,7 +35,7 @@ func TestMCPClient_Concurrency(t *testing.T) {
 	var transportCount int32
 
 	// Mock factory that sleeps to simulate network latency
-	client.transportFactory = func(_ context.Context, endpoint, token string) (mcp.Transport, error) {
+	client.transportFactory = func(_ context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
 		time.Sleep(100 * time.Millisecond) // Simulate latency
 		atomic.AddInt32(&transportCount, 1)
 
@@ -121,7 +121,7 @@ func TestMCPClient_CircuitBreaker(t *testing.T) {
 	client.endpoints["test"] = endpointInfo{endpoint: "http://fake", token: ""}
 
 	// Use a factory that always fails
-	client.transportFactory = func(_ context.Context, endpoint, token string) (mcp.Transport, error) {
+	client.transportFactory = func(_ context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
 		return nil, context.DeadlineExceeded
 	}
 

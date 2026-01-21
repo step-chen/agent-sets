@@ -10,6 +10,7 @@ import (
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/storage"
+	"pr-review-automation/internal/validator"
 	"strconv"
 	"strings"
 	"time"
@@ -75,10 +76,19 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 		return fmt.Errorf("review pr: %w", err)
 	}
 
-	// 4. Filter Duplicates (Semantic Dedup)
-	newComments := p.filterDuplicates(review.Comments, existingComments)
-	slog.Info("deduplication result",
+	// 4. Fetch Diff for Validation
+	diff := p.fetchDiff(ctx, pr)
+	commentValidator := validator.NewCommentValidator(diff)
+
+	// 5. Validate and Filter Comments
+	validComments, invalidComments := p.validateComments(review.Comments, commentValidator)
+
+	// 6. Semantic Deduplication
+	newComments := p.filterDuplicates(validComments, existingComments)
+	slog.Info("comment processing result",
 		"original_count", len(review.Comments),
+		"valid_count", len(validComments),
+		"invalid_count", len(invalidComments),
 		"filtered_count", len(newComments),
 		"existing_count", len(existingComments))
 	review.Comments = newComments
@@ -125,7 +135,7 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 				"projectKey":    pr.ProjectKey,
 				"repoSlug":      pr.RepoSlug,
 				"pullRequestId": pullRequestId,
-				"commentText":   fmt.Sprintf("<!-- ai-review:%s:%d -->\n%s", comment.File, comment.Line, comment.Comment),
+				"commentText":   fmt.Sprintf("<!-- ai-review:%s:%d:%s -->\n%s", comment.File, comment.Line, pr.LatestCommit, comment.Comment),
 			}
 
 			if comment.File != "" {
@@ -180,10 +190,12 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 // fetchExistingAIComments fetches existing comments from Bitbucket and filters for AI comments
 func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.PullRequest) []agent.ReviewComment {
 	// Call bitbucket_get_pull_request_comments
+	// Convert PR ID to int
+	prID, _ := strconv.Atoi(pr.ID)
 	result, err := p.commenter.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_comments", map[string]interface{}{
 		"projectKey":    pr.ProjectKey,
 		"repoSlug":      pr.RepoSlug,
-		"pullRequestId": pr.ID,
+		"pullRequestId": prID,
 	})
 	if err != nil {
 		slog.Warn("fetch existing comments failed", "error", err)
@@ -280,4 +292,59 @@ func (p *PRProcessor) semanticFingerprint(c agent.ReviewComment) string {
 		content = content[:50]
 	}
 	return fmt.Sprintf("%s:%s", c.File, content)
+}
+
+// fetchDiff retrieves the PR diff from Bitbucket for comment validation
+func (p *PRProcessor) fetchDiff(ctx context.Context, pr *domain.PullRequest) string {
+	prID, _ := strconv.Atoi(pr.ID)
+	result, err := p.commenter.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_diff", map[string]interface{}{
+		"projectKey":    pr.ProjectKey,
+		"repoSlug":      pr.RepoSlug,
+		"pullRequestId": prID,
+	})
+	if err != nil {
+		slog.Warn("fetch diff failed", "error", err)
+		return ""
+	}
+
+	// Handle different result types
+	if s, ok := result.(string); ok {
+		return s
+	}
+
+	// Try to extract from MCP content structure
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	res := gjson.GetBytes(jsonBytes, "content.0.text").String()
+	if res == "" {
+		// Fallback to "output" field (common in some ADK tools)
+		res = gjson.GetBytes(jsonBytes, "output").String()
+	}
+	return res
+}
+
+// validateComments validates comments against diff ranges
+// Returns valid comments and invalid comments (for potential general comment conversion)
+func (p *PRProcessor) validateComments(comments []agent.ReviewComment, v *validator.CommentValidator) (valid, invalid []agent.ReviewComment) {
+	for _, c := range comments {
+		if c.File == "" || c.Line == 0 {
+			// General comment (no file/line) - always valid
+			valid = append(valid, c)
+			continue
+		}
+
+		if v.IsValid(c.File, c.Line) {
+			valid = append(valid, c)
+		} else {
+			reason := v.GetInvalidReason(c.File, c.Line)
+			slog.Warn("invalid comment line",
+				"file", c.File,
+				"line", c.Line,
+				"reason", reason)
+			invalid = append(invalid, c)
+		}
+	}
+	return
 }

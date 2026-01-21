@@ -10,6 +10,7 @@ import (
 
 	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/domain"
+	"pr-review-automation/internal/filter"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/types"
 
@@ -28,15 +29,17 @@ type TextQuerier interface {
 // L1: Fast, rule-based probing using gjson.
 // L2: Robust, LLM-based extraction for unknown structures.
 type PayloadParser struct {
-	llm          model.LLM
-	promptLoader *agent.PromptLoader
+	llm           model.LLM
+	promptLoader  *agent.PromptLoader
+	payloadFilter filter.PayloadFilter
 }
 
 // NewPayloadParser creates a new PayloadParser.
-func NewPayloadParser(llm model.LLM, promptLoader *agent.PromptLoader) *PayloadParser {
+func NewPayloadParser(llm model.LLM, promptLoader *agent.PromptLoader, payloadFilter filter.PayloadFilter) *PayloadParser {
 	return &PayloadParser{
-		llm:          llm,
-		promptLoader: promptLoader,
+		llm:           llm,
+		promptLoader:  promptLoader,
+		payloadFilter: payloadFilter,
 	}
 }
 
@@ -113,13 +116,20 @@ func (p *PayloadParser) probePayload(body []byte) *domain.PullRequest {
 		return ""
 	}
 
+	// Paths for latestCommit (from source branch)
+	pathsLatestCommit := []string{
+		"pullRequest.fromRef.latestCommit",
+		"fromRef.latestCommit",
+	}
+
 	return &domain.PullRequest{
-		ID:          probeID(pathsID),
-		ProjectKey:  probeString(pathsProjectKey),
-		RepoSlug:    probeString(pathsRepoSlug),
-		Title:       probeString(pathsTitle),
-		Description: probeString(pathsDesc),
-		Author:      probeString(pathsAuthor),
+		ID:           probeID(pathsID),
+		ProjectKey:   probeString(pathsProjectKey),
+		RepoSlug:     probeString(pathsRepoSlug),
+		Title:        probeString(pathsTitle),
+		Description:  probeString(pathsDesc),
+		Author:       probeString(pathsAuthor),
+		LatestCommit: probeString(pathsLatestCommit),
 	}
 }
 
@@ -196,60 +206,16 @@ func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*doma
 
 func (p *PayloadParser) truncateForLLM(body []byte) string {
 	if !gjson.ValidBytes(body) {
-		// If invalid JSON, just return string, maybe truncated
+		// If invalid JSON, just return string
 		return string(body)
 	}
 
-	// We want to preserve structure but prune heavy fields.
-	// Since modifying JSON structure robustly in Go without struct is hard,
-	// we use a simpler strategy:
-	// Parse into map[string]interface{}, prune known heavy fields, re-marshal.
-
-	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return string(body)
+	if p.payloadFilter != nil {
+		filtered := p.payloadFilter.Filter(body)
+		return string(filtered)
 	}
 
-	// Recursive prune
-	prune(data, 0)
-
-	res, _ := json.Marshal(data)
-	return string(res)
-}
-
-func prune(v interface{}, depth int) {
-	if depth > 10 {
-		return
-	}
-
-	switch val := v.(type) {
-	case map[string]interface{}:
-		for k, v2 := range val {
-			// Prune rule 1: Remove specific heavy keys
-			if k == "reviewers" || k == "participants" || k == "commits" || k == "diff" || k == "links" {
-				delete(val, k)
-				continue
-			}
-			// Prune rule 2: Truncate long strings (description, summary)
-			if strVal, ok := v2.(string); ok {
-				if (k == "description" || k == "summary" || k == "body") && len(strVal) > 500 {
-					val[k] = strVal[:500] + "...(truncated)"
-					continue
-				}
-			}
-			prune(v2, depth+1)
-		}
-	case []interface{}:
-		// Prune rule 3: Truncate arrays to max 1 item (to keep structure sample)
-		// But don't touch them if they are small objects, only if list of objects
-		// Actually, for webhook, most arrays like 'reviewers' are redundant for parsing ID/Repo.
-		// However, protecting 'toRef'/'fromRef' which are objects, not arrays.
-		// If validation errors occurs, maybe we trimmed something important?
-		// We'll iterate items.
-		for _, item := range val {
-			prune(item, depth+1)
-		}
-	}
+	return string(body)
 }
 
 func (p *PayloadParser) isRetryableError(err error) bool {

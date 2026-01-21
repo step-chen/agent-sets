@@ -15,6 +15,7 @@ import (
 	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
+	"pr-review-automation/internal/filter/bitbucket"
 	"pr-review-automation/internal/processor"
 	"pr-review-automation/internal/storage"
 	"pr-review-automation/internal/webhook"
@@ -55,6 +56,15 @@ func main() {
 		}
 	}
 
+	// Initialize Filters
+	bbPayloadFilter := bitbucket.NewPayloadFilter()
+	bbResponseFilter := bitbucket.NewResponseFilter()
+
+	// Register filters with MCP Client
+	mcpClient.SetResponseFilter("bitbucket", bbResponseFilter)
+	mcpClient.SetResponseFilter("jira", bbResponseFilter)
+	mcpClient.SetResponseFilter("confluence", bbResponseFilter)
+
 	// Create a context for initialization
 	if err := mcpClient.InitializeConnections(); err != nil {
 		slog.Error("init mcp failed", "error", err)
@@ -66,7 +76,7 @@ func main() {
 	promptLoader := agent.NewPromptLoader(cfg.Prompts.Dir)
 
 	// Initialize PR review agent
-	prReviewAgent, err := agent.NewPRReviewAgent(llm, mcpClient, promptLoader, cfg.LLM.Model)
+	prReviewAgent, err := agent.NewPRReviewAgent(llm, mcpClient, promptLoader, cfg.LLM.Model, cfg.Agent)
 	if err != nil {
 		slog.Error("init agent failed", "error", err)
 		os.Exit(1)
@@ -89,8 +99,8 @@ func main() {
 	// Initialize PR processor
 	prProcessor := processor.NewPRProcessor(prReviewAgent, mcpClient, store)
 
-	// Initialize Payload Parser
-	payloadParser := webhook.NewPayloadParser(llm, promptLoader)
+	// Initialize Payload Parser with filter
+	payloadParser := webhook.NewPayloadParser(llm, promptLoader, bbPayloadFilter)
 
 	// Initialize webhook handler
 	webhookHandler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, payloadParser)

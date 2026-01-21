@@ -38,9 +38,19 @@ func TestOpenAIAdapter_GenerateContent(t *testing.T) {
 					"index": 0,
 					"message": map[string]any{
 						"role":    "assistant",
-						"content": "Hello, world!",
+						"content": nil,
+						"tool_calls": []map[string]any{
+							{
+								"id":   "call_123",
+								"type": "function",
+								"function": map[string]any{
+									"name":      "test_tool",
+									"arguments": "{}",
+								},
+							},
+						},
 					},
-					"finish_reason": "stop",
+					"finish_reason": "tool_calls",
 				},
 			},
 			"usage": map[string]any{
@@ -99,8 +109,14 @@ func TestOpenAIAdapter_GenerateContent(t *testing.T) {
 
 	// Part is struct, access fields directly
 	part := firstResp.Content.Parts[0]
-	if part.Text != "Hello, world!" {
-		t.Errorf("Expected 'Hello, world!', got %s", part.Text)
+	if part.FunctionCall == nil {
+		t.Fatal("Expected FunctionCall")
+	}
+	if part.FunctionCall.Name != "test_tool" {
+		t.Errorf("Expected tool name 'test_tool', got %s", part.FunctionCall.Name)
+	}
+	if part.FunctionCall.ID != "call_123" {
+		t.Errorf("Expected tool call ID 'call_123', got %s", part.FunctionCall.ID)
 	}
 }
 

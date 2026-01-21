@@ -62,7 +62,7 @@ func createTestParser(t *testing.T, llm *MockLLM) *PayloadParser {
 	os.WriteFile(filepath.Join(tmpDir, "system/pr_webhook_parser.md"), []byte("dummy prompt"), 0644)
 
 	loader := agent.NewPromptLoader(tmpDir)
-	return NewPayloadParser(llm, loader)
+	return NewPayloadParser(llm, loader, nil)
 }
 
 func TestBitbucketWebhookHandler_MethodNotAllowed(t *testing.T) {

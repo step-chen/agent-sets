@@ -21,6 +21,7 @@ const (
 type MCPServerConfig struct {
 	Endpoint     string   `yaml:"endpoint"`
 	Token        string   `yaml:"-"`             // From Env
+	AuthHeader   string   `yaml:"auth_header"`   // Header name to use for token, e.g. "Bitbucket-Token"
 	AllowedTools []string `yaml:"allowed_tools"` // Whitelist of tools to expose
 }
 
@@ -65,6 +66,8 @@ type Config struct {
 
 	Prompts PromptsConfig `yaml:"prompts"`
 
+	Agent AgentConfig `yaml:"agent"`
+
 	Storage StorageConfig `yaml:"storage"`
 }
 
@@ -72,6 +75,22 @@ type Config struct {
 type StorageConfig struct {
 	Driver string `yaml:"driver"` // sqlite
 	DSN    string `yaml:"dsn"`    // Connection string
+}
+
+// AgentConfig holds configuration for the PR review agent
+type AgentConfig struct {
+	MaxIterations int `yaml:"max_iterations"` // Max agent loop iterations (default: 20)
+	MaxToolCalls  int `yaml:"max_tool_calls"` // Max total tool calls per review (default: 50)
+
+	ChunkReview ChunkReviewConfig `yaml:"chunk_review"`
+}
+
+// ChunkReviewConfig holds configuration for chunked PR review
+type ChunkReviewConfig struct {
+	Enabled           bool `yaml:"enabled"`              // Enable chunked review for large PRs
+	MaxTokensPerChunk int  `yaml:"max_tokens_per_chunk"` // Max tokens per chunk (default: 40000)
+	MaxFilesPerChunk  int  `yaml:"max_files_per_chunk"`  // Max files per chunk (default: 10)
+	ParallelChunks    int  `yaml:"parallel_chunks"`      // Max concurrent chunk reviews (default: 3)
 }
 
 // GetLogLevel returns the slog.Level based on Log.Level string

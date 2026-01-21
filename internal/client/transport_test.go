@@ -6,7 +6,7 @@ import (
 )
 
 func TestNewMCPTransport_Stdio(t *testing.T) {
-	transport, err := NewMCPTransport(context.Background(), "stdio://echo hello", "")
+	transport, err := NewMCPTransport(context.Background(), "stdio://echo hello", "", "")
 	if err != nil {
 		t.Fatalf("NewMCPTransport failed: %v", err)
 	}
@@ -18,7 +18,7 @@ func TestNewMCPTransport_Stdio(t *testing.T) {
 }
 
 func TestNewMCPTransport_SSE(t *testing.T) {
-	transport, err := NewMCPTransport(context.Background(), "http://localhost:8080/sse", "token")
+	transport, err := NewMCPTransport(context.Background(), "http://localhost:8080/sse", "token", "")
 	if err != nil {
 		t.Fatalf("NewMCPTransport failed: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestNewMCPTransport_SSE(t *testing.T) {
 }
 
 func TestNewMCPTransport_Invalid(t *testing.T) {
-	_, err := NewMCPTransport(context.Background(), "invalid://endpoint", "")
+	_, err := NewMCPTransport(context.Background(), "invalid://endpoint", "", "")
 	if err == nil {
 		t.Fatal("Expected error for invalid scheme")
 	}
