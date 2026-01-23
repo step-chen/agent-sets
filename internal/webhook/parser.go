@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"pr-review-automation/internal/agent"
+	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/filter"
 	"pr-review-automation/internal/metrics"
@@ -29,14 +30,16 @@ type TextQuerier interface {
 // L1: Fast, rule-based probing using gjson.
 // L2: Robust, LLM-based extraction for unknown structures.
 type PayloadParser struct {
+	cfg           config.WebhookConfig
 	llm           model.LLM
 	promptLoader  *agent.PromptLoader
 	payloadFilter filter.PayloadFilter
 }
 
 // NewPayloadParser creates a new PayloadParser.
-func NewPayloadParser(llm model.LLM, promptLoader *agent.PromptLoader, payloadFilter filter.PayloadFilter) *PayloadParser {
+func NewPayloadParser(cfg config.WebhookConfig, llm model.LLM, promptLoader *agent.PromptLoader, payloadFilter filter.PayloadFilter) *PayloadParser {
 	return &PayloadParser{
+		cfg:           cfg,
 		llm:           llm,
 		promptLoader:  promptLoader,
 		payloadFilter: payloadFilter,
@@ -163,7 +166,10 @@ func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*doma
 	}
 
 	// 4. Retry Logic
-	const maxRetries = 2
+	maxRetries := p.cfg.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 2
+	}
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {

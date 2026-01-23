@@ -45,7 +45,7 @@ func (v *CommentValidator) parseDiff(diff string) {
 	for _, line := range lines {
 		// Check for new file
 		if matches := filePattern.FindStringSubmatch(line); len(matches) > 1 {
-			currentFile = strings.TrimSpace(matches[1])
+			currentFile = v.normalizeFilePath(strings.TrimSpace(matches[1]))
 			v.allFiles[currentFile] = true
 			inHunk = false
 			continue
@@ -202,11 +202,15 @@ func (v *CommentValidator) GetValidRanges(file string) []LineRange {
 
 // normalizeFilePath normalizes file paths for comparison
 func (v *CommentValidator) normalizeFilePath(file string) string {
-	// Remove common prefixes
+	// Remove common prefixes (use centralized constants)
 	file = strings.TrimPrefix(file, "a/")
 	file = strings.TrimPrefix(file, "b/")
 	file = strings.TrimPrefix(file, "src://")
 	file = strings.TrimPrefix(file, "dst://")
+	// Handle SVN trunk prefixes
+	file = strings.TrimPrefix(file, "trunk/")
+	file = strings.TrimPrefix(file, "src/trunk/")
+	file = strings.TrimPrefix(file, "dst/trunk/")
 	return file
 }
 

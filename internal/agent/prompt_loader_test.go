@@ -68,7 +68,7 @@ func TestPromptLoader_Load(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := loader.Load(tt.project, tt.language)
+			got, err := loader.Load(tt.project, tt.language, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Load() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -84,7 +84,7 @@ func TestPromptLoader_LoadError(t *testing.T) {
 	tempDir := t.TempDir()
 	loader := NewPromptLoader(tempDir)
 
-	_, err := loader.Load("nonexistent", "nonexistent")
+	_, err := loader.Load("nonexistent", "nonexistent", nil)
 	if err == nil {
 		t.Error("expected error for missing prompt, got nil")
 	}

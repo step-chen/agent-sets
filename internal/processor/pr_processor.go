@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"pr-review-automation/internal/agent"
+	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/storage"
@@ -36,14 +37,16 @@ type Commenter interface {
 
 // PRProcessor handles processing of pull requests
 type PRProcessor struct {
+	cfg       *config.Config
 	reviewer  Reviewer
 	commenter Commenter
 	storage   storage.Repository
 }
 
 // NewPRProcessor creates a new PR processor with dependencies injected
-func NewPRProcessor(reviewer Reviewer, commenter Commenter, storage storage.Repository) *PRProcessor {
+func NewPRProcessor(cfg *config.Config, reviewer Reviewer, commenter Commenter, storage storage.Repository) *PRProcessor {
 	return &PRProcessor{
+		cfg:       cfg,
 		reviewer:  reviewer,
 		commenter: commenter,
 		storage:   storage,
@@ -55,8 +58,6 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 	start := time.Now()
 	slog.Debug("process pr", "id", pr.ID, "repo", pr.RepoSlug, "title", pr.Title)
 	slog.Info("processing pr", "id", pr.ID)
-
-	metrics.PullRequestTotal.WithLabelValues("started").Inc()
 
 	metrics.PullRequestTotal.WithLabelValues("started").Inc()
 
@@ -94,23 +95,23 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 	review.Comments = newComments
 
 	// Persist review result (Audit Only)
+	// Persist review result (Audit Only)
+	// Persist review result (Audit Only)
 	if p.storage != nil {
-		// Async save to not block main flow
-		go func() {
-			saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			record := &storage.ReviewRecord{
-				ID:          fmt.Sprintf("%s-%s-%s-%d", pr.ProjectKey, pr.RepoSlug, pr.ID, time.Now().UnixNano()),
-				PullRequest: pr,
-				Result:      review,
-				CreatedAt:   time.Now(),
-				DurationMs:  time.Since(start).Milliseconds(),
-				Status:      "success",
-			}
-			if err := p.storage.SaveReview(saveCtx, record); err != nil {
-				slog.Warn("audit save failed", "error", err)
-			}
-		}()
+		// Save synchronously to ensure data safety on exit
+		saveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.Storage.Timeout)
+		defer cancel()
+		record := &storage.ReviewRecord{
+			ID:          fmt.Sprintf("%s-%s-%s-%d", pr.ProjectKey, pr.RepoSlug, pr.ID, time.Now().UnixNano()),
+			PullRequest: pr,
+			Result:      review,
+			CreatedAt:   time.Now(),
+			DurationMs:  time.Since(start).Milliseconds(),
+			Status:      "success",
+		}
+		if err := p.storage.SaveReview(saveCtx, record); err != nil {
+			slog.Warn("audit save failed", "error", err)
+		}
 	}
 
 	slog.Info("posting comments", "count", len(review.Comments))
@@ -123,9 +124,12 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 
 	// Use errgroup to post comments in parallel
 	// Limit concurrency to avoid overwhelming Bitbucket API
-	const maxConcurrentComments = 5
+	limit := p.cfg.Agent.MaxConcurrentComments
+	if limit <= 0 {
+		limit = 5
+	}
 	g, gCtx := errgroup.WithContext(ctx)
-	g.SetLimit(maxConcurrentComments)
+	g.SetLimit(limit)
 
 	for _, comment := range review.Comments {
 		// Capture loop variable
@@ -135,7 +139,7 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 				"projectKey":    pr.ProjectKey,
 				"repoSlug":      pr.RepoSlug,
 				"pullRequestId": pullRequestId,
-				"commentText":   fmt.Sprintf("<!-- ai-review:%s:%d:%s -->\n%s", comment.File, comment.Line, pr.LatestCommit, comment.Comment),
+				"commentText":   fmt.Sprintf("%s%s:%d:%s%s\n%s", config.MarkerAIReviewPrefix, comment.File, comment.Line, pr.LatestCommit, config.MarkerAIReviewSuffix, comment.Comment),
 			}
 
 			if comment.File != "" {
@@ -148,7 +152,7 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 			// Use gCtx for cancellation propagation, but be careful if gCtx is cancelled by one failure
 			// we might want independent failures. But errgroup cancels all on first error by default.
 			slog.Debug("post comment", "file", comment.File, "line", comment.Line)
-			_, err := p.commenter.CallTool(gCtx, "bitbucket", "bitbucket_add_pull_request_comment", args)
+			_, err := p.commenter.CallTool(gCtx, config.MCPServerBitbucket, config.ToolBitbucketAddComment, args)
 			if err != nil {
 				slog.Error("post comment failed",
 					"pr_id", pr.ID,
@@ -184,6 +188,11 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 		}
 	}
 
+	// Cleanup session history to prevent memory leaks
+	if cleaner, ok := p.commenter.(interface{ ClearSessionHistory(string) }); ok {
+		cleaner.ClearSessionHistory("pr-" + pr.ID)
+	}
+
 	return nil
 }
 
@@ -192,7 +201,7 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 	// Call bitbucket_get_pull_request_comments
 	// Convert PR ID to int
 	prID, _ := strconv.Atoi(pr.ID)
-	result, err := p.commenter.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_comments", map[string]interface{}{
+	result, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetComments, map[string]interface{}{
 		"projectKey":    pr.ProjectKey,
 		"repoSlug":      pr.RepoSlug,
 		"pullRequestId": prID,
@@ -218,7 +227,7 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 		rawContent := value.Get("content.raw").String()
 
 		// Check for AI marker
-		if strings.Contains(rawContent, "<!-- ai-review:") || strings.Contains(rawContent, "**AI Review**") {
+		if strings.Contains(rawContent, config.MarkerAIReviewPrefix) || strings.Contains(rawContent, config.MarkerAIReviewVisible) {
 			path := value.Get("inline.path").String()
 			// 'to' is usually the line number in PR diffs for added/modified lines in Bitbucket
 			line := int(value.Get("inline.to").Int())
@@ -226,8 +235,8 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 			// If path/line not in inline (e.g. general comment), try to parse from marker
 			if path == "" {
 				// Parse from marker: <!-- ai-review:file:line -->
-				if start := strings.Index(rawContent, "<!-- ai-review:"); start != -1 {
-					end := strings.Index(rawContent[start:], "-->")
+				if start := strings.Index(rawContent, config.MarkerAIReviewPrefix); start != -1 {
+					end := strings.Index(rawContent[start:], config.MarkerAIReviewSuffix)
 					if end != -1 {
 						marker := rawContent[start : start+end]
 						parts := strings.Split(marker, ":")
@@ -244,8 +253,8 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 			// Clean comment content (remove marker)
 			cleanComment := rawContent
 			// Remove HTML comments
-			if idx := strings.Index(cleanComment, "-->"); idx != -1 {
-				cleanComment = strings.TrimSpace(cleanComment[idx+3:])
+			if idx := strings.Index(cleanComment, config.MarkerAIReviewSuffix); idx != -1 {
+				cleanComment = strings.TrimSpace(cleanComment[idx+len(config.MarkerAIReviewSuffix):])
 			}
 
 			if path != "" {
@@ -291,13 +300,13 @@ func (p *PRProcessor) semanticFingerprint(c agent.ReviewComment) string {
 	if len(content) > 50 {
 		content = content[:50]
 	}
-	return fmt.Sprintf("%s:%s", c.File, content)
+	return fmt.Sprintf(config.DedupeKeySemanticFormat, c.File, content)
 }
 
 // fetchDiff retrieves the PR diff from Bitbucket for comment validation
 func (p *PRProcessor) fetchDiff(ctx context.Context, pr *domain.PullRequest) string {
 	prID, _ := strconv.Atoi(pr.ID)
-	result, err := p.commenter.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_diff", map[string]interface{}{
+	result, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetDiff, map[string]interface{}{
 		"projectKey":    pr.ProjectKey,
 		"repoSlug":      pr.RepoSlug,
 		"pullRequestId": prID,
@@ -321,6 +330,15 @@ func (p *PRProcessor) fetchDiff(ctx context.Context, pr *domain.PullRequest) str
 	if res == "" {
 		// Fallback to "output" field (common in some ADK tools)
 		res = gjson.GetBytes(jsonBytes, "output").String()
+	}
+
+	// [FIX] Handle case where the text result itself is a JSON string containing "diff"
+	// This happens with some Bitbucket MCP servers that return {"diff": "..."} as the text content
+	if len(res) > 0 && res[0] == '{' {
+		diffField := gjson.Get(res, "diff")
+		if diffField.Exists() {
+			return diffField.String()
+		}
 	}
 	return res
 }

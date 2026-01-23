@@ -111,13 +111,13 @@ func (c *InterceptingConnection) Write(ctx context.Context, message jsonrpc.Mess
 			Arguments map[string]interface{} `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err == nil {
-			if params.Name == "bitbucket_add_pull_request_comment" {
+			if params.Name == config.ToolBitbucketAddComment {
 				c.mu.Lock()
 				op := fmt.Sprintf("Comment on %v: %v", params.Arguments["pullRequestId"], params.Arguments["commentText"])
 				*c.capturedOps = append(*c.capturedOps, op)
 				c.mu.Unlock()
 
-				fmt.Printf("\n[InterceptingTransport] Captured Comment Write:\nMethod: %s\nParams: %s\n", req.Method, string(req.Params))
+				fmt.Printf("\n[OUTPUT] Bitbucket Comment:\n%v\n", params.Arguments["commentText"])
 
 				// Inject Mock Success Response
 				resultJSON := `{"content": [{"type": "text", "text": "{\"id\": 12345, \"version\": 1}"}]}`
@@ -164,7 +164,7 @@ func TestE2E_PRFlow(t *testing.T) {
 	mcpClient := client.NewMCPClient(cfg)
 
 	// [FIX] Inject Response Filter (Same as production)
-	bbResponseFilter := bitbucket.NewResponseFilter()
+	bbResponseFilter := bitbucket.NewResponseFilter(20000)
 	mcpClient.SetResponseFilter("bitbucket", bbResponseFilter)
 
 	capturedOps := []string{}
@@ -199,29 +199,47 @@ func TestE2E_PRFlow(t *testing.T) {
 		t.Fatalf("Failed to create Agent: %v", err)
 	}
 
-	prProcessor := processor.NewPRProcessor(prAgent, mcpClient, nil)
+	prProcessor := processor.NewPRProcessor(cfg, prAgent, mcpClient, nil)
 	bbFilter := bitbucket.NewPayloadFilter()
-	parser := webhook.NewPayloadParser(llm, promptLoader, bbFilter)
+	parser := webhook.NewPayloadParser(cfg.Webhook, llm, promptLoader, bbFilter)
 	handler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, parser)
 
 	// 4. Send Real Payload (User Provided - Corrected)
 	reqBody := `{
-    "date": "2026-01-20T09:45:01+0100",
+    "date": "2026-01-20T07:53:37+0100",
     "actor": {
-        "emailAddress": "tangyong@navinfo.com",
-        "displayName": "Tang Yong",
-        "name": "tang.yong",
+        "emailAddress": "peng.wang@navinfo.com",
+        "displayName": "Wang Peng",
+        "name": "peng.wang",
         "active": true,
-        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/tang.yong"}]},
-        "id": 220,
+        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/peng.wang"}]},
+        "id": 303,
         "type": "NORMAL",
-        "slug": "tang.yong"
+        "slug": "peng.wang"
     },
     "eventKey": "pr:opened",
     "pullRequest": {
         "author": {
             "approved": false,
             "role": "AUTHOR",
+            "user": {
+                "emailAddress": "peng.wang@navinfo.com",
+                "displayName": "Wang Peng",
+                "name": "peng.wang",
+                "active": true,
+                "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/peng.wang"}]},
+                "id": 303,
+                "type": "NORMAL",
+                "slug": "peng.wang"
+            },
+            "status": "UNAPPROVED"
+        },
+        "updatedDate": 1768892017467,
+        "title": "HAD-10776 supprot NumberOfLanes",
+        "version": 0,
+        "reviewers": [{
+            "approved": false,
+            "role": "REVIEWER",
             "user": {
                 "emailAddress": "tangyong@navinfo.com",
                 "displayName": "Tang Yong",
@@ -233,28 +251,9 @@ func TestE2E_PRFlow(t *testing.T) {
                 "slug": "tang.yong"
             },
             "status": "UNAPPROVED"
-        },
-        "description": "* HAD-10941 imp LaneTransitionGeneration\n* HAD-10941 add unit test",
-        "updatedDate": 1768898701638,
-        "title": "HAD-10941 fastmap adbuy pbd generate lane transitions",
-        "version": 0,
-        "reviewers": [{
-            "approved": false,
-            "role": "REVIEWER",
-            "user": {
-                "emailAddress": "songqin4178@navinfo.com",
-                "displayName": "Song Qin (Maya)",
-                "name": "song.qin",
-                "active": true,
-                "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/song.qin"}]},
-                "id": 513,
-                "type": "NORMAL",
-                "slug": "song.qin"
-            },
-            "status": "UNAPPROVED"
         }],
         "toRef": {
-            "latestCommit": "de01077b0c28aa1a373d19d07d424d06c4a90d59",
+            "latestCommit": "0edb30c498aae820bd418973f4bda6850d3e839e",
             "id": "refs/heads/controlled/Toolkit",
             "displayId": "controlled/Toolkit",
             "type": "BRANCH",
@@ -293,13 +292,13 @@ func TestE2E_PRFlow(t *testing.T) {
                 "statusMessage": "Available"
             }
         },
-        "createdDate": 1768898701638,
+        "createdDate": 1768892017467,
         "draft": false,
         "closed": false,
         "fromRef": {
-            "latestCommit": "cc6939ddbb7998ad56ed00b0ede211cffded52ea",
-            "id": "refs/heads/HAD-10941-fastmap-adbuy-pbd-generate-lane-transitions",
-            "displayId": "HAD-10941-fastmap-adbuy-pbd-generate-lane-transitions",
+            "latestCommit": "1dfa57501d988cea1d7e514be5d670e822c0e435",
+            "id": "refs/heads/HAD-10776-support-number-of-lanes",
+            "displayId": "HAD-10776-support-number-of-lanes",
             "type": "BRANCH",
             "repository": {
                 "archived": false,
@@ -336,8 +335,8 @@ func TestE2E_PRFlow(t *testing.T) {
                 "statusMessage": "Available"
             }
         },
-        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/pull-requests/66"}]},
-        "id": 66,
+        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/pull-requests/65"}]},
+        "id": 65,
         "state": "OPEN",
         "locked": false,
         "open": true,
@@ -420,9 +419,11 @@ func TestE2E_ChunkedReview(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Prompts.Dir = filepath.Join(rootDir, "prompts")
 
-	// Respect config.test.yaml for chunking parameters
-	cfg.Agent.MaxIterations = 20
-	// Ensure serial execution as requested
+	// --- CHUNKING CONFIGURATION ---
+	cfg.Agent.MaxIterations = 40
+	cfg.Agent.ChunkReview.Enabled = true
+	cfg.Agent.ChunkReview.MaxTokensPerChunk = 100 // Force splitting
+	cfg.Agent.ChunkReview.MaxFilesPerChunk = 1
 	cfg.Agent.ChunkReview.ParallelChunks = 1
 
 	if cfg.LLM.APIKey == "" {
@@ -437,7 +438,7 @@ func TestE2E_ChunkedReview(t *testing.T) {
 	slog.SetDefault(logger)
 
 	mcpClient := client.NewMCPClient(cfg)
-	bbResponseFilter := bitbucket.NewResponseFilter()
+	bbResponseFilter := bitbucket.NewResponseFilter(20000)
 	mcpClient.SetResponseFilter("bitbucket", bbResponseFilter)
 
 	capturedOps := []string{}
@@ -467,35 +468,54 @@ func TestE2E_ChunkedReview(t *testing.T) {
 		t.Fatalf("Failed to create LLM: %v", err)
 	}
 	promptLoader := agent.NewPromptLoader(cfg.Prompts.Dir)
+	promptLoader.SetRawSchemaProvider(mcpClient)
 
 	prAgent, err := agent.NewPRReviewAgent(llm, mcpClient, promptLoader, cfg.LLM.Model, cfg.Agent)
 	if err != nil {
 		t.Fatalf("Failed to create Agent: %v", err)
 	}
 
-	prProcessor := processor.NewPRProcessor(prAgent, mcpClient, nil)
+	prProcessor := processor.NewPRProcessor(cfg, prAgent, mcpClient, nil)
 	bbFilter := bitbucket.NewPayloadFilter()
-	parser := webhook.NewPayloadParser(llm, promptLoader, bbFilter)
+	parser := webhook.NewPayloadParser(cfg.Webhook, llm, promptLoader, bbFilter)
 	handler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, parser)
 
 	// 4. Send Payload (REAL DATA FROM USER)
 	reqBody := `{
-    "date": "2026-01-20T09:45:01+0100",
+    "date": "2026-01-20T07:53:37+0100",
     "actor": {
-        "emailAddress": "tangyong@navinfo.com",
-        "displayName": "Tang Yong",
-        "name": "tang.yong",
+        "emailAddress": "peng.wang@navinfo.com",
+        "displayName": "Wang Peng",
+        "name": "peng.wang",
         "active": true,
-        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/tang.yong"}]},
-        "id": 220,
+        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/peng.wang"}]},
+        "id": 303,
         "type": "NORMAL",
-        "slug": "tang.yong"
+        "slug": "peng.wang"
     },
     "eventKey": "pr:opened",
     "pullRequest": {
         "author": {
             "approved": false,
             "role": "AUTHOR",
+            "user": {
+                "emailAddress": "peng.wang@navinfo.com",
+                "displayName": "Wang Peng",
+                "name": "peng.wang",
+                "active": true,
+                "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/peng.wang"}]},
+                "id": 303,
+                "type": "NORMAL",
+                "slug": "peng.wang"
+            },
+            "status": "UNAPPROVED"
+        },
+        "updatedDate": 1768892017467,
+        "title": "HAD-10776 supprot NumberOfLanes",
+        "version": 0,
+        "reviewers": [{
+            "approved": false,
+            "role": "REVIEWER",
             "user": {
                 "emailAddress": "tangyong@navinfo.com",
                 "displayName": "Tang Yong",
@@ -507,28 +527,9 @@ func TestE2E_ChunkedReview(t *testing.T) {
                 "slug": "tang.yong"
             },
             "status": "UNAPPROVED"
-        },
-        "description": "* HAD-10941 imp LaneTransitionGeneration\n* HAD-10941 add unit test",
-        "updatedDate": 1768898701638,
-        "title": "HAD-10941 fastmap adbuy pbd generate lane transitions",
-        "version": 0,
-        "reviewers": [{
-            "approved": false,
-            "role": "REVIEWER",
-            "user": {
-                "emailAddress": "songqin4178@navinfo.com",
-                "displayName": "Song Qin (Maya)",
-                "name": "song.qin",
-                "active": true,
-                "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/users/song.qin"}]},
-                "id": 513,
-                "type": "NORMAL",
-                "slug": "song.qin"
-            },
-            "status": "UNAPPROVED"
         }],
         "toRef": {
-            "latestCommit": "de01077b0c28aa1a373d19d07d424d06c4a90d59",
+            "latestCommit": "0edb30c498aae820bd418973f4bda6850d3e839e",
             "id": "refs/heads/controlled/Toolkit",
             "displayId": "controlled/Toolkit",
             "type": "BRANCH",
@@ -567,13 +568,13 @@ func TestE2E_ChunkedReview(t *testing.T) {
                 "statusMessage": "Available"
             }
         },
-        "createdDate": 1768898701638,
+        "createdDate": 1768892017467,
         "draft": false,
         "closed": false,
         "fromRef": {
-            "latestCommit": "cc6939ddbb7998ad56ed00b0ede211cffded52ea",
-            "id": "refs/heads/HAD-10941-fastmap-adbuy-pbd-generate-lane-transitions",
-            "displayId": "HAD-10941-fastmap-adbuy-pbd-generate-lane-transitions",
+            "latestCommit": "1dfa57501d988cea1d7e514be5d670e822c0e435",
+            "id": "refs/heads/HAD-10776-support-number-of-lanes",
+            "displayId": "HAD-10776-support-number-of-lanes",
             "type": "BRANCH",
             "repository": {
                 "archived": false,
@@ -610,8 +611,8 @@ func TestE2E_ChunkedReview(t *testing.T) {
                 "statusMessage": "Available"
             }
         },
-        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/pull-requests/66"}]},
-        "id": 66,
+        "links": {"self": [{"href": "https://bitbucket.cms.navinfo.cloud/projects/FAS/repos/toolkit/pull-requests/65"}]},
+        "id": 65,
         "state": "OPEN",
         "locked": false,
         "open": true,

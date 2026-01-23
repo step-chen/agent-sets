@@ -19,8 +19,6 @@ import (
 	"pr-review-automation/internal/splitter"
 	"pr-review-automation/internal/types"
 
-	"github.com/tidwall/gjson"
-
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/model"
@@ -93,17 +91,51 @@ func NewPRReviewAgent(llm model.LLM, mcpClient *client.MCPClient, promptLoader *
 	}, nil
 }
 
-// ReviewPR orchestrates the PR review process
+// Name returns the name of the reviewer backend
+func (pra *PRReviewAgent) Name() string {
+	return "adk"
+}
+
+// ReviewPR orchestrates the PR review process with automatic fallback on token limit errors
 func (pra *PRReviewAgent) ReviewPR(ctx context.Context, req *ReviewRequest) (*ReviewResult, error) {
 	slog.Info("Starting PR review", "pr_id", req.PR.ID)
 
-	// Check if chunked review is enabled
-	if pra.cfg.ChunkReview.Enabled {
-		// Attempt to use chunked review strategy
-		return pra.reviewPRChunked(ctx, req)
+	var result *ReviewResult
+	var err error
+
+	// Check if direct mode is forced via config
+	if pra.cfg.DirectMode {
+		slog.Info("Direct mode forced via config", "pr_id", req.PR.ID)
+		return pra.reviewPRDirect(ctx, req)
 	}
 
-	return pra.reviewPRStandard(ctx, req)
+	// Check if chunked review is enabled
+	if pra.cfg.ChunkReview.Enabled {
+		result, err = pra.reviewPRChunked(ctx, req)
+	} else {
+		result, err = pra.reviewPRStandard(ctx, req)
+	}
+
+	// Fallback to Direct Completion mode on token limit or critical errors
+	if isTokenLimitError(err) {
+		slog.Warn("Token limit exceeded, falling back to Direct mode", "error", err)
+		return pra.reviewPRDirect(ctx, req)
+	}
+
+	return result, err
+}
+
+// isTokenLimitError checks if the error is due to token/context limit
+func isTokenLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "context_length_exceeded") ||
+		strings.Contains(errStr, "maximum context length") ||
+		strings.Contains(errStr, "context window") ||
+		strings.Contains(errStr, "token limit") ||
+		strings.Contains(errStr, "too many tokens")
 }
 
 // reviewPRStandard performs the standard single-pass review
@@ -123,11 +155,14 @@ func (pra *PRReviewAgent) reviewPRStandard(ctx context.Context, req *ReviewReque
 
 	// 2. Load prompt (project from PR, language detection)
 	language := "default"
-	if changedFiles := pra.fetchChangedFiles(ctx, pr); len(changedFiles) > 0 {
+	if changedFiles := FetchChangedFiles(ctx, pra.mcpClient, pr); len(changedFiles) > 0 {
 		language = DetectLanguage(changedFiles)
 		slog.Debug("detected language", "language", language, "files", len(changedFiles))
 	}
-	instruction, err := pra.promptLoader.Load(pr.ProjectKey, language)
+	instruction, err := pra.promptLoader.Load(pr.ProjectKey, language, map[string]interface{}{
+		"ProjectKey": pr.ProjectKey,
+		"RepoSlug":   pr.RepoSlug,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("load prompt: %w", err)
 	}
@@ -203,41 +238,49 @@ func (pra *PRReviewAgent) reviewPRChunked(ctx context.Context, req *ReviewReques
 		"repoSlug":      pr.RepoSlug,
 		"pullRequestId": prID,
 	}
-	diffResult, err := pra.mcpClient.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_diff", args)
+	diffResult, err := pra.mcpClient.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetDiff, args)
 	if err != nil {
 		slog.Error("failed to fetch diff for splitting", "error", err)
 		return pra.reviewPRStandard(ctx, req)
 	}
 	slog.Info("Fetched diff for splitting", "type", fmt.Sprintf("%T", diffResult))
 
-	// Handle different result types from CallTool
-	var diffStr string
-	if s, ok := diffResult.(string); ok {
-		diffStr = s
-	} else {
-		// Fallback: marshal to JSON and query using gjson
-		// This handles map[string]interface{} and *mcp.CallToolResult struct
-		b, err := json.Marshal(diffResult)
-		if err == nil {
-			diffStr = gjson.GetBytes(b, "content.0.text").String()
-			if diffStr == "" {
-				diffStr = gjson.GetBytes(b, "output").String()
-			}
-		}
-	}
+	// Handle different result types from CallTool via robust helper
+	diffStr := ExtractString(diffResult, "content.0.text", "output.diff", "output.text", "output", "diff")
 
 	if diffStr == "" {
-		slog.Warn("diff result is not a string or empty", "type", fmt.Sprintf("%T", diffResult), "value", fmt.Sprintf("%#v", diffResult))
+		slog.Warn("diff result is empty after extraction", "type", fmt.Sprintf("%T", diffResult))
 		return pra.reviewPRStandard(ctx, req)
 	}
+	slog.Info("Diff extracted successfully", "len", len(diffStr), "preview", diffStr[:min(len(diffStr), 100)])
 
-	// 2. Split diff
-	sp := splitter.NewDiffSplitter(pra.cfg.ChunkReview.MaxTokensPerChunk, pra.cfg.ChunkReview.MaxFilesPerChunk)
+	// 2. Preprocess diff to reduce token usage
+	preprocessOpts := splitter.DefaultPreprocessOptions()
+	preprocessOpts.RemoveWhitespace = pra.cfg.ChunkReview.RemoveWhitespace
+	preprocessOpts.RemoveBinaryDiff = pra.cfg.ChunkReview.RemoveBinaryDiff
+	preprocessOpts.FoldDeletesOver = pra.cfg.ChunkReview.FoldDeletesOver
+	preprocessOpts.MaxContextLines = pra.cfg.ChunkReview.ContextLines
+	preprocessOpts.CompressSpaces = pra.cfg.ChunkReview.CompressSpaces
+	preprocessor := splitter.NewDiffPreprocessor(preprocessOpts)
+	originalLen := len(diffStr)
+	diffStr = preprocessor.Preprocess(diffStr)
+	slog.Info("Diff preprocessed", "original_bytes", originalLen, "processed_bytes", len(diffStr))
+
+	// 3. Split diff with context preservation
+	contextLines := pra.cfg.ChunkReview.ContextLines
+	if contextLines <= 0 {
+		contextLines = 20 // Default
+	}
+	sp := splitter.NewDiffSplitterWithContext(
+		pra.cfg.ChunkReview.MaxTokensPerChunk,
+		pra.cfg.ChunkReview.MaxFilesPerChunk,
+		contextLines,
+	)
 	chunks := sp.Split(diffStr)
-	slog.Info("Split result", "chunks", len(chunks), "diff_bytes", len(diffStr))
+	slog.Info("Split result", "chunks", len(chunks), "diff_bytes", len(diffStr), "context_lines", contextLines)
 
-	if len(chunks) <= 1 {
-		slog.Info("Diff small enough for single pass", "chunks", 1)
+	if len(chunks) == 0 {
+		slog.Warn("no diff chunks generated, falling back to standard review")
 		return pra.reviewPRStandard(ctx, req)
 	}
 
@@ -309,14 +352,18 @@ func (pra *PRReviewAgent) reviewPRChunked(ctx context.Context, req *ReviewReques
 func (pra *PRReviewAgent) reviewSingleChunk(ctx context.Context, req *ReviewRequest, chunk splitter.DiffChunk) (*ReviewResult, error) {
 	pr := req.PR
 
-	// Initialize ADK agent
-	toolsets := pra.mcpClient.GetToolsets()
+	// Use minimal toolset for chunked review to prevent aimless exploration.
+	// Diff is already provided; only allow get_file_content for additional context.
+	toolsets := pra.mcpClient.GetFilteredToolsets(config.ChunkedReviewAllowedTools)
 
 	// Load prompt for this chunk
 	// We use the same language detection logic but scoped to the chunk files
 	chunkFilePaths := chunk.FileList()
 	language := DetectLanguage(chunkFilePaths)
-	instruction, err := pra.promptLoader.Load(pr.ProjectKey, language)
+	instruction, err := pra.promptLoader.Load(pr.ProjectKey, language, map[string]interface{}{
+		"ProjectKey": pr.ProjectKey,
+		"RepoSlug":   pr.RepoSlug,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("load prompt: %w", err)
 	}
@@ -336,8 +383,10 @@ func (pra *PRReviewAgent) reviewSingleChunk(ctx context.Context, req *ReviewRequ
 
 	// Construct Chunk Specific Prompt
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Review PR #%v (Chunk %d/%d) in %v/%v\n\n",
+	sb.WriteString(fmt.Sprintf("Review PR #%v (Chunk %d/%d) in %v/%v\n",
 		pr.ID, chunk.ChunkID, chunk.TotalChunks, pr.ProjectKey, pr.RepoSlug))
+	sb.WriteString(fmt.Sprintf("Title: %s\nAuthor: %s\nDesc: %s\nLatestCommit: %s\n\n",
+		pr.Title, pr.Author, pr.Description, pr.LatestCommit))
 
 	sb.WriteString("## Files in this chunk:\n")
 	for _, f := range chunk.FileList() {
@@ -475,30 +524,6 @@ func (pra *PRReviewAgent) executeAgent(ctx context.Context, adkAgent agent.Agent
 
 // fetchChangedFiles retrieves the list of changed file paths from the PR.
 // Returns empty slice on error (falls back to default language).
-func (pra *PRReviewAgent) fetchChangedFiles(ctx context.Context, pr *domain.PullRequest) []string {
-	// pr.ID is string, converting to int for MCP
-	prID, _ := strconv.Atoi(pr.ID)
-	result, err := pra.mcpClient.CallTool(ctx, "bitbucket", "bitbucket_get_pull_request_changes", map[string]interface{}{
-		"projectKey":    pr.ProjectKey,
-		"repoSlug":      pr.RepoSlug,
-		"pullRequestId": prID,
-	})
-	if err != nil {
-		slog.Debug("fetch changed files failed", "error", err)
-		return nil
-	}
-
-	// Parse result to extract file paths
-	// Result structure: { "values": [{ "path": { "name": "foo.go" } }, ...] }
-	// Use gjson for safe extraction
-	jsonStr, _ := json.Marshal(result)
-	var files []string
-	gjson.GetBytes(jsonStr, "values.#.path.name").ForEach(func(_, v gjson.Result) bool {
-		files = append(files, v.String())
-		return true
-	})
-	return files
-}
 
 // jsonLLM is a wrapper around model.LLM that invalidates JSON mode
 type jsonLLM struct {
@@ -511,4 +536,127 @@ func (j *jsonLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, st
 	}
 	req.Config.ResponseMIMEType = "application/json"
 	return j.LLM.GenerateContent(ctx, req, streaming)
+}
+
+// reviewPRDirect performs a direct LLM completion without Agent loop
+// This is used as fallback when token limits are exceeded
+func (pra *PRReviewAgent) reviewPRDirect(ctx context.Context, req *ReviewRequest) (*ReviewResult, error) {
+	pr := req.PR
+	slog.Info("Starting Direct mode review", "pr_id", pr.ID)
+
+	start := time.Now()
+	metricResult := "error"
+	defer func() {
+		metrics.ProcessingDuration.WithLabelValues(metricResult + "_direct").Observe(time.Since(start).Seconds())
+	}()
+
+	// 1. Fetch diff directly (no Agent)
+	prID, _ := strconv.Atoi(pr.ID)
+	diffResult, err := pra.mcpClient.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetDiff, map[string]interface{}{
+		"projectKey":    pr.ProjectKey,
+		"repoSlug":      pr.RepoSlug,
+		"pullRequestId": prID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fetch diff in direct mode: %w", err)
+	}
+
+	// Extract diff string
+	// Extract diff string using robust helper
+	diffStr := ExtractString(diffResult, "content.0.text", "output.diff", "output.text", "output", "diff")
+
+	if diffStr == "" {
+		return nil, fmt.Errorf("empty diff in direct mode")
+	}
+
+	// 2. Aggressive preprocessing for direct mode
+	preprocessor := splitter.NewDiffPreprocessor(splitter.PreprocessOptions{
+		MaxContextLines:  pra.cfg.ChunkReview.ContextLines,
+		FoldDeletesOver:  pra.cfg.ChunkReview.FoldDeletesOver,
+		RemoveBinaryDiff: pra.cfg.ChunkReview.RemoveBinaryDiff,
+		RemoveWhitespace: pra.cfg.ChunkReview.RemoveWhitespace,
+		CompressSpaces:   pra.cfg.ChunkReview.CompressSpaces,
+	})
+	diffStr = preprocessor.Preprocess(diffStr)
+
+	// 3. Truncate if still too large
+	maxChars := pra.cfg.MaxDirectChars
+	if maxChars == 0 {
+		maxChars = 40000
+	}
+	if len(diffStr) > maxChars {
+		diffStr = diffStr[:maxChars] + "\n\n[... TRUNCATED FOR TOKEN LIMIT ...]"
+	}
+
+	// 4. Load prompt
+	language := "default"
+	if changedFiles := FetchChangedFiles(ctx, pra.mcpClient, pr); len(changedFiles) > 0 {
+		language = DetectLanguage(changedFiles)
+	}
+	instruction, err := pra.promptLoader.Load(pr.ProjectKey, language, map[string]interface{}{
+		"ProjectKey": pr.ProjectKey,
+		"RepoSlug":   pr.RepoSlug,
+	})
+	if err != nil {
+		instruction = "You are a code reviewer. Review the PR diff and output JSON with comments, score, and summary."
+	}
+
+	// 5. Build direct prompt
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Review PR #%s in %s/%s (DIRECT MODE - LIMITED CONTEXT)\n\n",
+		pr.ID, pr.ProjectKey, pr.RepoSlug))
+	sb.WriteString(fmt.Sprintf("Title: %s\nAuthor: %s\n\n", pr.Title, pr.Author))
+	sb.WriteString("## Diff:\n```diff\n")
+	sb.WriteString(diffStr)
+	sb.WriteString("\n```\n\n")
+	sb.WriteString("Review the code and output ONLY valid JSON:\n")
+	sb.WriteString(`{"comments":[{"file":"path","line":123,"comment":"issue"}],"score":85,"summary":"verdict"}`)
+
+	// 6. Direct LLM call using SimpleTextQuery
+	llmAdapter, ok := pra.llm.(*client.OpenAIAdapter)
+	if !ok {
+		// If not OpenAIAdapter, try unwrapping jsonLLM
+		if jsonWrapped, ok := pra.llm.(*jsonLLM); ok {
+			if adapter, ok := jsonWrapped.LLM.(*client.OpenAIAdapter); ok {
+				llmAdapter = adapter
+			}
+		}
+	}
+
+	if llmAdapter == nil {
+		return nil, fmt.Errorf("direct mode requires OpenAIAdapter")
+	}
+
+	response, err := llmAdapter.SimpleTextQuery(ctx, instruction, sb.String())
+	if err != nil {
+		return nil, fmt.Errorf("direct LLM call: %w", err)
+	}
+
+	// 7. Parse response
+	response = types.CleanJSONFromMarkdown(response)
+	var result ReviewResult
+	if err := json.Unmarshal([]byte(response), &result); err != nil {
+		// Fallback extraction
+		start := strings.Index(response, "{")
+		end := strings.LastIndex(response, "}")
+		if start != -1 && end != -1 && end > start {
+			if err2 := json.Unmarshal([]byte(response[start:end+1]), &result); err2 == nil {
+				result.Model = pra.modelName + " (direct)"
+				metricResult = "success"
+				return &result, nil
+			}
+		}
+		return nil, fmt.Errorf("parse direct response: %w", err)
+	}
+
+	result.Model = pra.modelName + " (direct)"
+	metricResult = "success"
+	metrics.PullRequestTotal.WithLabelValues("success_direct").Inc()
+
+	slog.Info("Direct mode review completed",
+		"pr_id", pr.ID,
+		"comments", len(result.Comments),
+		"duration", time.Since(start))
+
+	return &result, nil
 }

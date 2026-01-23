@@ -2,9 +2,11 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +51,7 @@ type MCPClient struct {
 	stale            map[string]bool                  // Track stale connections
 	circuits         map[string]*circuitState         // Circuit breaker state per server
 	responseFilters  map[string]filter.ResponseFilter // [NEW] Response filters per server
+	callHistory      sync.Map                         // [NEW] History of tool calls for deduplication
 	mu               sync.RWMutex                     // Thread-safe access
 	transportFactory TransportFactory                 // Factory for creating transports (injectable for testing)
 	requestGroup     singleflight.Group               // Singleflight group for coalescing reconnections
@@ -128,9 +131,9 @@ func (c *MCPClient) InitializeConnections() error {
 		return nil
 	}
 
-	addServerConn("bitbucket", c.cfg.MCP.Bitbucket)
-	addServerConn("jira", c.cfg.MCP.Jira)
-	addServerConn("confluence", c.cfg.MCP.Confluence)
+	addServerConn(config.MCPServerBitbucket, c.cfg.MCP.Bitbucket)
+	addServerConn(config.MCPServerJira, c.cfg.MCP.Jira)
+	addServerConn(config.MCPServerConfluence, c.cfg.MCP.Confluence)
 
 	return nil
 }
@@ -149,6 +152,122 @@ func (c *MCPClient) GetToolsets() []tool.Toolset {
 			serverName: name,
 		})
 	}
+	return result
+}
+
+// GetFilteredToolsets returns toolsets with only specified tools exposed.
+// This is used for chunked review to prevent aimless exploration.
+func (c *MCPClient) GetFilteredToolsets(allowedTools []string) []tool.Toolset {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	result := make([]tool.Toolset, 0, len(c.endpoints))
+
+	for name := range c.endpoints {
+		result = append(result, &FilteredRetryToolset{
+			client:       c,
+			serverName:   name,
+			allowedTools: allowedTools,
+		})
+	}
+	return result
+}
+
+// GetToolDeclarations returns FunctionDeclarations for all tools across all servers.
+// This is used by LangChainAgent to build langchaingo tools.
+// GetToolDeclarations returns FunctionDeclarations for all tools across all servers.
+// This is used by LangChainAgent to build langchaingo tools.
+func (c *MCPClient) GetToolDeclarations() map[string][]*genai.FunctionDeclaration {
+	// Snapshot toolsets to avoid holding lock during long running operations
+	c.mu.RLock()
+	toolsetsSnapshot := make(map[string]tool.Toolset)
+	for name, ts := range c.toolsets {
+		toolsetsSnapshot[name] = ts
+	}
+	c.mu.RUnlock()
+
+	result := make(map[string][]*genai.FunctionDeclaration)
+	tCtx := types.NewNopToolContext(c.baseCtx, "", "")
+
+	for name, ts := range toolsetsSnapshot {
+		tools, err := ts.Tools(tCtx)
+		if err != nil {
+			slog.Debug("get tools for declarations failed", "server", name, "error", err)
+			continue
+		}
+
+		var declarations []*genai.FunctionDeclaration
+		for _, t := range tools {
+			if dp, ok := t.(DeclarationProvider); ok {
+				if fd := dp.Declaration(); fd != nil {
+					declarations = append(declarations, fd)
+				}
+			}
+		}
+		result[name] = declarations
+	}
+
+	return result
+}
+
+// GetRawToolSchemas fetches raw tool schemas directly from MCP servers.
+// This bypasses ADK which doesn't populate FunctionDeclaration.Parameters.
+func (c *MCPClient) GetRawToolSchemas() map[string][]types.RawToolSchema {
+	result := make(map[string][]types.RawToolSchema)
+
+	c.mu.RLock()
+	transportsCopy := make(map[string]mcp.Transport)
+	for name, t := range c.transports {
+		transportsCopy[name] = t
+	}
+	c.mu.RUnlock()
+
+	for serverName, transport := range transportsCopy {
+		// Create a temporary MCP client to list tools
+		client := mcp.NewClient(&mcp.Implementation{
+			Name:    "pr-review-schema-fetcher",
+			Version: "1.0.0",
+		}, nil)
+
+		session, err := client.Connect(c.baseCtx, transport, nil)
+		if err != nil {
+			slog.Debug("GetRawToolSchemas: connect failed", "server", serverName, "error", err)
+			continue
+		}
+
+		// Get tools list
+		toolsResult, err := session.ListTools(c.baseCtx, nil)
+		if err != nil {
+			slog.Debug("GetRawToolSchemas: ListTools failed", "server", serverName, "error", err)
+			continue
+		}
+
+		var schemas []types.RawToolSchema
+		for _, t := range toolsResult.Tools {
+			schema := types.RawToolSchema{
+				Name: t.Name,
+			}
+
+			// InputSchema is any, need to convert to map
+			if t.InputSchema != nil {
+				if m, ok := t.InputSchema.(map[string]interface{}); ok {
+					schema.InputSchema = m
+				} else {
+					// Try JSON round-trip
+					b, err := json.Marshal(t.InputSchema)
+					if err == nil {
+						var m map[string]interface{}
+						if json.Unmarshal(b, &m) == nil {
+							schema.InputSchema = m
+						}
+					}
+				}
+			}
+			schemas = append(schemas, schema)
+		}
+		result[serverName] = schemas
+		slog.Debug("GetRawToolSchemas: fetched", "server", serverName, "tools", len(schemas))
+	}
+
 	return result
 }
 
@@ -377,7 +496,10 @@ func (c *MCPClient) CallTool(ctx context.Context, serverName, toolName string, a
 	}
 
 	// Find tool
-	tCtx := types.NewNopToolContext(ctx, "", "")
+	// Use a unique ID for manual calls to avoid incorrect deduplication collision
+	// between independent calls (e.g. fetchDiff in agent vs fetchDiff in processor)
+	uniqueID := fmt.Sprintf("manual-%d", time.Now().UnixNano())
+	tCtx := types.NewNopToolContext(ctx, uniqueID, "")
 	tools, err := ts.Tools(tCtx)
 	if err != nil {
 		return nil, fmt.Errorf("list tools: %w", err)
@@ -443,6 +565,52 @@ func (rt *RetryToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
 	return wrappedTools, nil
 }
 
+// FilteredRetryToolset wraps a toolset but only exposes specified tools.
+// This prevents LLM from exploring irrelevant tools and simplifies behavior.
+type FilteredRetryToolset struct {
+	client       *MCPClient
+	serverName   string
+	allowedTools []string
+}
+
+func (frt *FilteredRetryToolset) Name() string {
+	return "mcp-" + frt.serverName + "-filtered"
+}
+
+// Tools returns only the tools in the allowlist
+func (frt *FilteredRetryToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
+	frt.client.getOrReconnect(frt.serverName)
+	inner, err := frt.client.getNativeToolset(frt.serverName)
+	if err != nil {
+		return nil, err
+	}
+
+	nativeTools, err := inner.Tools(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build allowlist set
+	allowed := make(map[string]bool, len(frt.allowedTools))
+	for _, name := range frt.allowedTools {
+		allowed[name] = true
+	}
+
+	// Filter and wrap
+	var filtered []tool.Tool
+	for _, t := range nativeTools {
+		if allowed[t.Name()] {
+			filtered = append(filtered, &RetryTool{
+				client:     frt.client,
+				serverName: frt.serverName,
+				inner:      t,
+				toolName:   t.Name(),
+			})
+		}
+	}
+	return filtered, nil
+}
+
 // RetryTool wraps a specific tool to retry its execution on failure
 type RetryTool struct {
 	client     *MCPClient
@@ -505,6 +673,20 @@ func (t *RetryTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 	// Use local variable to avoid concurrent writes to shared t.inner field
 	currentTool := t.inner
 
+	// Deduplication: Check if this tool call has been made before in this session
+	// Only apply deduplication if context has a SessionID (i.e., it's an Agent call, not a manual one)
+	// Manual calls via CallTool pass a NopContext with empty SessionID.
+	sessionID := ctx.SessionID()
+	if sessionID != "" {
+		argsBytes, _ := json.Marshal(args)
+		dedupKey := fmt.Sprintf("%s:%s:%s:%s", sessionID, t.serverName, t.toolName, string(argsBytes))
+
+		if _, loaded := t.client.callHistory.LoadOrStore(dedupKey, struct{}{}); loaded {
+			slog.Warn("duplicate tool call blocked", "session", sessionID, "tool", t.toolName)
+			return nil, fmt.Errorf("duplicate tool call blocked: %s", t.toolName)
+		}
+	}
+
 	for attempt := range maxAttempts {
 		// Check for context cancellation before each attempt
 		if err := ctx.Err(); err != nil {
@@ -528,13 +710,17 @@ func (t *RetryTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 			t.client.mu.RUnlock()
 
 			if filter != nil {
+				slog.Info("applying response filter", "server", t.serverName, "tool", t.toolName)
 				// Result is map[string]any, we treat it as any for the filter interface
 				filtered := filter.Filter(t.toolName, result)
 				if asMap, ok := filtered.(map[string]any); ok {
+					slog.Info("filter applied successfully", "tool", t.toolName, "original_type", fmt.Sprintf("%T", result), "filtered_type", fmt.Sprintf("%T", asMap))
 					return asMap, nil
 				}
 				// If filter returns something else (shouldn't happen for map), return original
 				slog.Warn("response filter returned non-map", "tool", t.toolName, "type", fmt.Sprintf("%T", filtered))
+			} else {
+				slog.Info("no response filter found", "server", t.serverName)
 			}
 
 			return result, nil
@@ -589,4 +775,19 @@ func (t *RetryTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 
 	metrics.MCPToolCalls.WithLabelValues(t.serverName, t.toolName, "error").Inc()
 	return nil, fmt.Errorf("run %s/%s: %d retries exhausted: %w", t.serverName, t.toolName, maxAttempts, lastErr)
+}
+
+// ClearSessionHistory consistently removes execution history for a specific session
+func (c *MCPClient) ClearSessionHistory(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	prefix := sessionID + ":"
+	c.callHistory.Range(func(key, _ any) bool {
+		if k, ok := key.(string); ok && strings.HasPrefix(k, prefix) {
+			c.callHistory.Delete(key)
+		}
+		return true
+	})
+	slog.Debug("cleared session history", "session_id", sessionID)
 }

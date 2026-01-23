@@ -21,9 +21,11 @@ import (
 
 // OpenAIAdapter implements model.LLM interface using OpenAI official client
 type OpenAIAdapter struct {
-	client *openai.Client
-	model  string
-	mu     sync.Mutex
+	client   *openai.Client
+	model    string
+	endpoint string
+	apiKey   string
+	mu       sync.Mutex
 }
 
 // NewOpenAIAdapter creates a new OpenAI adapter
@@ -34,9 +36,26 @@ func NewOpenAIAdapter(client *openai.Client, model string) *OpenAIAdapter {
 	}
 }
 
+// NewOpenAIAdapterWithConfig creates a new OpenAI adapter with endpoint and API key stored
+func NewOpenAIAdapterWithConfig(client *openai.Client, model, endpoint, apiKey string) *OpenAIAdapter {
+	return &OpenAIAdapter{
+		client:   client,
+		model:    model,
+		endpoint: endpoint,
+		apiKey:   apiKey,
+	}
+}
+
 // Name returns the model name
 func (a *OpenAIAdapter) Name() string {
 	return "openai-" + a.model
+}
+
+// GetConfig returns the endpoint and API key for external use
+func (a *OpenAIAdapter) GetConfig() (endpoint, apiKey string) {
+	// Extract from client - OpenAI client stores baseURL and API key internally
+	// We need to store them in the adapter for this to work
+	return a.endpoint, a.apiKey
 }
 
 // Ping sends a minimal request to verify connection

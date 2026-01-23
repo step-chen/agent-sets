@@ -17,5 +17,6 @@ func NewLLM(cfg *config.Config) (model.LLM, error) {
 		option.WithAPIKey(cfg.LLM.APIKey),
 		option.WithBaseURL(cfg.LLM.Endpoint),
 	)
-	return &OpenAIAdapter{client: &client, model: cfg.LLM.Model}, nil
+	// Use NewOpenAIAdapterWithConfig to ensure endpoint and apiKey are stored for GetConfig()
+	return NewOpenAIAdapterWithConfig(&client, cfg.LLM.Model, cfg.LLM.Endpoint, cfg.LLM.APIKey), nil
 }

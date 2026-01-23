@@ -2,18 +2,23 @@ package bitbucket
 
 import (
 	"encoding/json"
-	"fmt"
+	"log/slog"
+	"pr-review-automation/internal/config"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 // ResponseFilter filters Bitbucket MCP tool responses
-type ResponseFilter struct{}
+type ResponseFilter struct {
+	MaxStringLen int
+}
 
 // NewResponseFilter creates a new Bitbucket ResponseFilter
-func NewResponseFilter() *ResponseFilter {
-	return &ResponseFilter{}
+func NewResponseFilter(maxStringLen int) *ResponseFilter {
+	return &ResponseFilter{
+		MaxStringLen: maxStringLen,
+	}
 }
 
 // Filter filters the response based on the tool name
@@ -26,20 +31,17 @@ func (f *ResponseFilter) Filter(toolName string, response any) any {
 	var filteredBytes []byte
 
 	switch toolName {
-	case "bitbucket_get_pull_request_comments":
+	case config.ToolBitbucketGetComments:
 		filteredBytes = f.filterComments(jsonBytes)
-	case "bitbucket_get_pull_request":
+	case config.ToolBitbucketGetPullRequest:
 		filteredBytes = f.filterPullRequest(jsonBytes)
-	case "bitbucket_get_pull_request_changes":
+	case config.ToolBitbucketGetChanges:
 		filteredBytes = f.filterChanges(jsonBytes)
-	case "bitbucket_get_file_content":
-		filteredBytes = f.filterLongStrings(jsonBytes, 2000)
-	case "bitbucket_get_pull_request_diff":
-		// Never truncate diff here, the splitter handles it
-		return response
+	case config.ToolBitbucketGetFileContent:
+		filteredBytes = f.filterLongStrings(jsonBytes, f.MaxStringLen)
 	default:
-		// Generic long string filter for any other unknown tool
-		filteredBytes = f.filterLongStrings(jsonBytes, 2000)
+		// Generic long string filter for any other unknown tool (including GetDiff)
+		filteredBytes = f.filterLongStrings(jsonBytes, f.MaxStringLen)
 	}
 
 	var filtered any
@@ -77,10 +79,10 @@ func (f *ResponseFilter) filterComments(data []byte) []byte {
 		result, _ = sjson.Delete(result, prefix+".content.markup")
 		result, _ = sjson.Delete(result, prefix+".content.html")
 
-		// Truncate text
+		// Truncate text (reduced from 1000 to 500 - dedup only needs first 50 chars)
 		text := gjson.Get(result, prefix+".text").String()
-		if len(text) > 1000 {
-			result, _ = sjson.Set(result, prefix+".text", text[:1000]+"... [TRUNCATED]")
+		if len(text) > config.MaxCommentLength {
+			result, _ = sjson.Set(result, prefix+".text", text[:config.MaxCommentLength]+config.TruncatedSuffix)
 		}
 
 		return true
@@ -161,7 +163,7 @@ func (f *ResponseFilter) truncateRecursive(val *interface{}, maxLen int) {
 	switch v := (*val).(type) {
 	case string:
 		if len(v) > maxLen {
-			fmt.Printf("[TRUNCATE] from %d to %d\n", len(v), maxLen)
+			slog.Info("truncating long response string", "original_len", len(v), "limit", maxLen)
 			(*val) = v[:maxLen] + "... [TRUNCATED]"
 		}
 	case map[string]interface{}:

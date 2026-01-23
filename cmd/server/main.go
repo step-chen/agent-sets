@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"gopkg.in/natefinch/lumberjack.v2"
+
 	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
@@ -35,7 +37,8 @@ func main() {
 	}
 
 	// Setup structured logging with configurable level, format, and output
-	logger := setupLogger(cfg)
+	logger, logCleanup := setupLogger(cfg)
+	defer logCleanup()
 	slog.SetDefault(logger)
 
 	// Initialize clients
@@ -58,7 +61,7 @@ func main() {
 
 	// Initialize Filters
 	bbPayloadFilter := bitbucket.NewPayloadFilter()
-	bbResponseFilter := bitbucket.NewResponseFilter()
+	bbResponseFilter := bitbucket.NewResponseFilter(cfg.Agent.ResponseFilter.MaxStringLen)
 
 	// Register filters with MCP Client
 	mcpClient.SetResponseFilter("bitbucket", bbResponseFilter)
@@ -74,13 +77,15 @@ func main() {
 
 	// Initialize Prompt Loader
 	promptLoader := agent.NewPromptLoader(cfg.Prompts.Dir)
+	promptLoader.SetRawSchemaProvider(mcpClient)
 
-	// Initialize PR review agent
-	prReviewAgent, err := agent.NewPRReviewAgent(llm, mcpClient, promptLoader, cfg.LLM.Model, cfg.Agent)
+	// Initialize PR review agent using Reviewer factory
+	prReviewAgent, err := agent.NewReviewer(cfg.Agent, llm, mcpClient, promptLoader, cfg.LLM.Model)
 	if err != nil {
 		slog.Error("init agent failed", "error", err)
 		os.Exit(1)
 	}
+	slog.Info("agent initialized", "backend", prReviewAgent.Name())
 
 	// Initialize storage
 	var store storage.Repository
@@ -97,10 +102,10 @@ func main() {
 	}
 
 	// Initialize PR processor
-	prProcessor := processor.NewPRProcessor(prReviewAgent, mcpClient, store)
+	prProcessor := processor.NewPRProcessor(cfg, prReviewAgent, mcpClient, store)
 
 	// Initialize Payload Parser with filter
-	payloadParser := webhook.NewPayloadParser(llm, promptLoader, bbPayloadFilter)
+	payloadParser := webhook.NewPayloadParser(cfg.Webhook, llm, promptLoader, bbPayloadFilter)
 
 	// Initialize webhook handler
 	webhookHandler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, payloadParser)
@@ -196,8 +201,9 @@ func main() {
 }
 
 // setupLogger creates a logger based on configuration
-func setupLogger(cfg *config.Config) *slog.Logger {
+func setupLogger(cfg *config.Config) (*slog.Logger, func()) {
 	var writers []io.Writer
+	var closers []io.Closer
 	outputs := strings.Split(cfg.Log.Output, ",")
 
 	for _, output := range outputs {
@@ -213,12 +219,16 @@ func setupLogger(cfg *config.Config) *slog.Logger {
 		case "stdout":
 			w = os.Stdout
 		default:
-			f, err := os.OpenFile(output, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "open log file failed: %v, skipping output %s\n", err, output)
-				continue
+			// Use lumberjack for log rotation
+			l := &lumberjack.Logger{
+				Filename:   output,
+				MaxSize:    cfg.Log.Rotation.MaxSize,
+				MaxBackups: cfg.Log.Rotation.MaxBackups,
+				MaxAge:     cfg.Log.Rotation.MaxAge,
+				Compress:   cfg.Log.Rotation.Compress,
 			}
-			w = f
+			w = l
+			closers = append(closers, l)
 		}
 		writers = append(writers, w)
 	}
@@ -237,5 +247,11 @@ func setupLogger(cfg *config.Config) *slog.Logger {
 		handler = slog.NewTextHandler(multiWriter, opts)
 	}
 
-	return slog.New(handler)
+	cleanup := func() {
+		for _, c := range closers {
+			c.Close()
+		}
+	}
+
+	return slog.New(handler), cleanup
 }

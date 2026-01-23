@@ -2,6 +2,7 @@ package aggregator
 
 import (
 	"fmt"
+	"pr-review-automation/internal/config"
 	"strings"
 )
 
@@ -88,13 +89,13 @@ func (a *ResultAggregator) Aggregate(results []ChunkReviewResult) *AggregatedRes
 	}
 }
 
-// deduplicateComments removes duplicate comments (same file + line)
+// deduplicateComments removes duplicate comments (same file + same content)
 func (a *ResultAggregator) deduplicateComments(comments []ReviewComment) []ReviewComment {
 	seen := make(map[string]bool)
 	var result []ReviewComment
 
 	for _, c := range comments {
-		key := fmt.Sprintf("%s:%d", c.File, c.Line)
+		key := a.semanticFingerprint(c)
 		if !seen[key] {
 			seen[key] = true
 			result = append(result, c)
@@ -104,16 +105,27 @@ func (a *ResultAggregator) deduplicateComments(comments []ReviewComment) []Revie
 	return result
 }
 
+// semanticFingerprint creates a fingerprint for a comment based on file and content keywords
+func (a *ResultAggregator) semanticFingerprint(c ReviewComment) string {
+	// Simple fingerprint: file + first 50 chars of comment (lowercase)
+	// This avoids line number dependency and allows multiple comments on the same line
+	content := strings.ToLower(strings.TrimSpace(c.Comment))
+	if len(content) > 50 {
+		content = content[:50]
+	}
+	return fmt.Sprintf(config.DedupeKeySemanticFormat, c.File, content)
+}
+
 // combineSummaries creates a unified summary from chunk summaries
 func (a *ResultAggregator) combineSummaries(summaries []string, errors []string, totalChunks int) string {
 	var sb strings.Builder
 
 	if totalChunks > 1 {
-		sb.WriteString(fmt.Sprintf("**Reviewed in %d chunks**\n\n", totalChunks))
+		sb.WriteString(fmt.Sprintf(config.ReportChunkedHeader, totalChunks))
 	}
 
 	if len(errors) > 0 {
-		sb.WriteString("⚠️ **Partial Review** (some chunks failed):\n")
+		sb.WriteString(config.ReportPartialWarning)
 		for _, e := range errors {
 			sb.WriteString(fmt.Sprintf("- %s\n", e))
 		}
@@ -121,7 +133,7 @@ func (a *ResultAggregator) combineSummaries(summaries []string, errors []string,
 	}
 
 	if len(summaries) == 0 {
-		sb.WriteString("No detailed summary available.")
+		sb.WriteString(config.ReportNoSummary)
 		return sb.String()
 	}
 
@@ -131,7 +143,7 @@ func (a *ResultAggregator) combineSummaries(summaries []string, errors []string,
 	}
 
 	// Multiple summaries: combine them
-	sb.WriteString("**Summary by section:**\n")
+	sb.WriteString(config.ReportSummaryHeader)
 	for _, s := range summaries {
 		sb.WriteString(fmt.Sprintf("- %s\n", s))
 	}

@@ -106,7 +106,7 @@ func TestPayloadFilter(t *testing.T) {
 }
 
 func TestResponseFilter_Comments(t *testing.T) {
-	filter := NewResponseFilter()
+	filter := NewResponseFilter(2000)
 	input := `
 {
   "values": [

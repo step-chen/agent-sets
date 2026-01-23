@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"pr-review-automation/internal/agent"
+	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 )
 
@@ -31,7 +32,7 @@ func (m *MockCommenter) CallTool(ctx context.Context, serverName, toolName strin
 		return m.CallToolFunc(ctx, serverName, toolName, args)
 	}
 	// Return a default suitable for parsing (empty bitbucket comments response)
-	if toolName == "bitbucket_get_pull_request_comments" {
+	if toolName == config.ToolBitbucketGetComments {
 		return `{"values": []}`, nil
 	}
 	return nil, nil // Default
@@ -56,7 +57,7 @@ func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
 		CallToolFunc: func(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
 			callCount++
 			// Helper to simulate comments response
-			if toolName == "bitbucket_get_pull_request_comments" {
+			if toolName == config.ToolBitbucketGetComments {
 				return `{"values":[]}`, nil
 			}
 			return nil, nil
@@ -64,7 +65,7 @@ func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
 	}
 
 	// Create processor
-	p := NewPRProcessor(mockReviewer, mockCommenter, nil)
+	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil)
 
 	// Test data
 	pr := &domain.PullRequest{
@@ -98,7 +99,7 @@ func TestPRProcessor_ProcessPullRequest_ReviewFail(t *testing.T) {
 	}
 	mockCommenter := &MockCommenter{}
 
-	p := NewPRProcessor(mockReviewer, mockCommenter, nil)
+	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil)
 
 	err := p.ProcessPullRequest(context.Background(), &domain.PullRequest{ID: "123"})
 	if err == nil {

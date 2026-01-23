@@ -17,6 +17,11 @@ const (
 	DefaultConfigPath        = "config.yaml"
 )
 
+// WebhookConfig holds configuration for webhook processing
+type WebhookConfig struct {
+	MaxRetries int `yaml:"max_retries"` // Max Retries for L2 extraction (default: 2)
+}
+
 // MCPServerConfig holds configuration for a single MCP server
 type MCPServerConfig struct {
 	Endpoint     string   `yaml:"endpoint"`
@@ -33,9 +38,15 @@ type PromptsConfig struct {
 // Config holds the configuration for the PR review automation tool
 type Config struct {
 	Log struct {
-		Level  string `yaml:"level"`  // DEBUG, INFO, WARN, ERROR
-		Format string `yaml:"format"` // text, json
-		Output string `yaml:"output"` // stdout, stderr, /path/to/file
+		Level    string `yaml:"level"`  // DEBUG, INFO, WARN, ERROR
+		Format   string `yaml:"format"` // text, json
+		Output   string `yaml:"output"` // stdout, stderr, /path/to/file
+		Rotation struct {
+			MaxSize    int  `yaml:"max_size"`    // Megabytes
+			MaxBackups int  `yaml:"max_backups"` // Number of old files to keep
+			MaxAge     int  `yaml:"max_age"`     // Days to keep
+			Compress   bool `yaml:"compress"`
+		} `yaml:"rotation"`
 	} `yaml:"log"`
 
 	Server struct {
@@ -66,6 +77,8 @@ type Config struct {
 
 	Prompts PromptsConfig `yaml:"prompts"`
 
+	Webhook WebhookConfig `yaml:"webhook"`
+
 	Agent AgentConfig `yaml:"agent"`
 
 	Storage StorageConfig `yaml:"storage"`
@@ -73,16 +86,33 @@ type Config struct {
 
 // StorageConfig holds configuration for review persistence
 type StorageConfig struct {
-	Driver string `yaml:"driver"` // sqlite
-	DSN    string `yaml:"dsn"`    // Connection string
+	Driver  string        `yaml:"driver"`  // sqlite
+	DSN     string        `yaml:"dsn"`     // Connection string
+	Timeout time.Duration `yaml:"timeout"` // Timeout for storage operations (default: 5s)
 }
 
 // AgentConfig holds configuration for the PR review agent
 type AgentConfig struct {
-	MaxIterations int `yaml:"max_iterations"` // Max agent loop iterations (default: 20)
-	MaxToolCalls  int `yaml:"max_tool_calls"` // Max total tool calls per review (default: 50)
+	Backend               string `yaml:"backend"`                 // adk, langchain, direct (default: adk)
+	MaxIterations         int    `yaml:"max_iterations"`          // Max agent loop iterations (default: 20)
+	MaxToolCalls          int    `yaml:"max_tool_calls"`          // Max total tool calls per review (default: 50)
+	MaxConcurrentComments int    `yaml:"max_concurrent_comments"` // Max concurrent comments posting (default: 5)
+	DirectMode            bool   `yaml:"direct_mode"`             // Deprecated: use Backend: "direct" instead
+	MaxDirectChars        int    `yaml:"max_direct_chars"`        // Max characters for direct mode (default: 40000)
 
-	ChunkReview ChunkReviewConfig `yaml:"chunk_review"`
+	ResponseFilter struct {
+		MaxStringLen int `yaml:"max_string_len"` // Max string length in tool output (default: 2000)
+	} `yaml:"response_filter"`
+
+	ChunkReview   ChunkReviewConfig   `yaml:"chunk_review"`
+	DirectContext DirectContextConfig `yaml:"direct_context"`
+}
+
+// DirectContextConfig configures what context to fetch in direct mode
+type DirectContextConfig struct {
+	FetchCommitInfo  bool `yaml:"fetch_commit_info"`
+	FetchFileContent bool `yaml:"fetch_file_content"`
+	MaxFileSize      int  `yaml:"max_file_size"`
 }
 
 // ChunkReviewConfig holds configuration for chunked PR review
@@ -91,6 +121,11 @@ type ChunkReviewConfig struct {
 	MaxTokensPerChunk int  `yaml:"max_tokens_per_chunk"` // Max tokens per chunk (default: 40000)
 	MaxFilesPerChunk  int  `yaml:"max_files_per_chunk"`  // Max files per chunk (default: 10)
 	ParallelChunks    int  `yaml:"parallel_chunks"`      // Max concurrent chunk reviews (default: 3)
+	ContextLines      int  `yaml:"context_lines"`        // Context lines to preserve when splitting (default: 20)
+	FoldDeletesOver   int  `yaml:"fold_deletes_over"`    // Fold deletes over N lines (default: 10)
+	RemoveWhitespace  bool `yaml:"remove_whitespace"`    // Remove whitespace from diff (default: false)
+	CompressSpaces    bool `yaml:"compress_spaces"`      // Compress consecutive spaces (default: true)
+	RemoveBinaryDiff  bool `yaml:"remove_binary_diff"`   // Remove binary files from diff (default: true)
 }
 
 // GetLogLevel returns the slog.Level based on Log.Level string
@@ -126,6 +161,30 @@ func LoadConfig() *Config {
 	cfg.MCP.Retry.Backoff = 1 * time.Second
 	cfg.MCP.Retry.MaxBackoff = 30 * time.Second
 	cfg.Prompts.Dir = "prompts"
+	cfg.Webhook.MaxRetries = 2
+
+	// Agent defaults
+	cfg.Agent.MaxIterations = 40
+	cfg.Agent.MaxToolCalls = 50
+	cfg.Agent.MaxConcurrentComments = 5
+	cfg.Agent.MaxDirectChars = 40000
+	cfg.Agent.ResponseFilter.MaxStringLen = 2000
+	cfg.Agent.ChunkReview.MaxTokensPerChunk = 40000
+	cfg.Agent.ChunkReview.MaxFilesPerChunk = 10
+	cfg.Agent.ChunkReview.ContextLines = 20
+	cfg.Agent.ChunkReview.FoldDeletesOver = 10
+	cfg.Agent.ChunkReview.RemoveWhitespace = false
+	cfg.Agent.ChunkReview.CompressSpaces = true
+	cfg.Agent.ChunkReview.RemoveBinaryDiff = true
+
+	// Log Rotation defaults
+	cfg.Log.Rotation.MaxSize = 100
+	cfg.Log.Rotation.MaxBackups = 10
+	cfg.Log.Rotation.MaxAge = 7
+	cfg.Log.Rotation.Compress = true
+
+	// Storage defaults
+	cfg.Storage.Timeout = 5 * time.Second
 
 	// Try to load from YAML
 	configPath := getEnv("CONFIG_PATH", DefaultConfigPath)
@@ -162,8 +221,17 @@ func LoadConfig() *Config {
 	if envLogFormat := os.Getenv("LOG_FORMAT"); envLogFormat != "" {
 		cfg.Log.Format = envLogFormat
 	}
-	if envLogOutput := os.Getenv("LOG_OUTPUT"); envLogOutput != "" {
+	if envLogOutput := getEnv("LOG_OUTPUT", ""); envLogOutput != "" {
 		cfg.Log.Output = envLogOutput
+	}
+	if envLogMaxSize := getEnvInt("LOG_MAX_SIZE", 0); envLogMaxSize != 0 {
+		cfg.Log.Rotation.MaxSize = envLogMaxSize
+	}
+	if envLogMaxBackups := getEnvInt("LOG_MAX_BACKUPS", 0); envLogMaxBackups != 0 {
+		cfg.Log.Rotation.MaxBackups = envLogMaxBackups
+	}
+	if envLogMaxAge := getEnvInt("LOG_MAX_AGE", 0); envLogMaxAge != 0 {
+		cfg.Log.Rotation.MaxAge = envLogMaxAge
 	}
 
 	return cfg
