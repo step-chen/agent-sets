@@ -22,17 +22,18 @@ index abc123..def456 100644
 	v := NewCommentValidator(diff)
 
 	// Line 12 and 13 are the new lines (@ +10, then 2 context lines, then 2 new lines)
+	// Now we allow comments on context lines within the hunk
 	tests := []struct {
 		file  string
 		line  int
 		valid bool
 	}{
-		{"file1.go", 10, false}, // Context line
-		{"file1.go", 11, false}, // Context line
+		{"file1.go", 10, true},  // Context line (now allowed)
+		{"file1.go", 11, true},  // Context line (now allowed)
 		{"file1.go", 12, true},  // New line 1
 		{"file1.go", 13, true},  // New line 2
-		{"file1.go", 14, false}, // Context line
-		{"file1.go", 15, false}, // After removed line
+		{"file1.go", 14, true},  // Context line (now allowed)
+		{"file1.go", 15, true},  // Context line (now allowed)
 		{"other.go", 10, false}, // File not in diff
 	}
 
@@ -72,11 +73,11 @@ diff --git a/pkg/bar.go b/pkg/bar.go
 		line  int
 		valid bool
 	}{
-		{"pkg/foo.go", 2, true},  // import line
-		{"pkg/foo.go", 1, false}, // package line (context)
-		{"pkg/bar.go", 6, true},  // y := 2
-		{"pkg/bar.go", 7, true},  // z := 3
-		{"pkg/bar.go", 5, false}, // x := 1 (context)
+		{"pkg/foo.go", 2, true}, // import line
+		{"pkg/foo.go", 1, true}, // package line (context - now allowed)
+		{"pkg/bar.go", 6, true}, // y := 2
+		{"pkg/bar.go", 7, true}, // z := 3
+		{"pkg/bar.go", 5, true}, // x := 1 (context - now allowed)
 	}
 
 	for _, tt := range tests {
@@ -139,13 +140,13 @@ index 133182a..e232330 100644
 		line  int
 		valid bool
 	}{
-		{"trunk/src/Common/LinkRelationMaintainer.cpp", 439, true},  // First + line
-		{"trunk/src/Common/LinkRelationMaintainer.cpp", 440, true},  // Second + line
-		{"trunk/src/Common/LinkRelationMaintainer.cpp", 441, true},  // Third + line
-		{"trunk/src/Common/LinkRelationMaintainer.cpp", 442, true},  // Fourth + line
-		{"trunk/src/Common/LinkRelationMaintainer.cpp", 443, true},  // Fifth + line (empty)
-		{"trunk/src/Common/LinkRelationMaintainer.cpp", 436, false}, // Context line
-		{"LinkRelationMaintainer.cpp", 439, true},                   // Partial match
+		{"trunk/src/Common/LinkRelationMaintainer.cpp", 439, true}, // First + line
+		{"trunk/src/Common/LinkRelationMaintainer.cpp", 440, true}, // Second + line
+		{"trunk/src/Common/LinkRelationMaintainer.cpp", 441, true}, // Third + line
+		{"trunk/src/Common/LinkRelationMaintainer.cpp", 442, true}, // Fourth + line
+		{"trunk/src/Common/LinkRelationMaintainer.cpp", 443, true}, // Fifth + line (empty)
+		{"trunk/src/Common/LinkRelationMaintainer.cpp", 436, true}, // Context line (now allowed)
+		{"LinkRelationMaintainer.cpp", 439, true},                  // Partial match
 	}
 
 	for _, tt := range tests {

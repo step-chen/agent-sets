@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,10 +23,16 @@ type WebhookConfig struct {
 
 // MCPServerConfig holds configuration for a single MCP server
 type MCPServerConfig struct {
-	Endpoint     string   `yaml:"endpoint"`
-	Token        string   `yaml:"-"`             // From Env
-	AuthHeader   string   `yaml:"auth_header"`   // Header name to use for token, e.g. "Bitbucket-Token"
-	AllowedTools []string `yaml:"allowed_tools"` // Whitelist of tools to expose
+	Endpoint        string         `yaml:"endpoint"`
+	Token           string         `yaml:"-"`                // From Env
+	AuthHeader      string         `yaml:"auth_header"`      // Header name to use for token, e.g. "Bitbucket-Token"
+	AllowedTools    []string       `yaml:"allowed_tools"`    // Whitelist of tools to expose
+	ResponseFilters []FilterConfig `yaml:"response_filters"` // Output filters
+}
+
+type FilterConfig struct {
+	Name    string                 `yaml:"name"`
+	Options map[string]interface{} `yaml:"options"`
 }
 
 // PromptsConfig holds configuration for prompt loading
@@ -54,22 +59,30 @@ type Config struct {
 		ConcurrencyLimit int64         `yaml:"concurrency_limit"`
 		ReadTimeout      time.Duration `yaml:"read_timeout"`
 		WriteTimeout     time.Duration `yaml:"write_timeout"`
+		ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 		MaxBodySize      int64         `yaml:"max_body_size"`
 		WebhookSecret    string        `yaml:"-"` // From Env
 	} `yaml:"server"`
 
 	LLM struct {
-		Model    string `yaml:"model"`
-		Endpoint string `yaml:"endpoint"`
-		APIKey   string `yaml:"api_key"` // From YAML or Env
+		Model          string        `yaml:"model"`
+		Endpoint       string        `yaml:"endpoint"`
+		APIKey         string        `yaml:"api_key"` // From YAML or Env
+		Timeout        time.Duration `yaml:"timeout"`
+		MaxConcurrency int           `yaml:"max_concurrency"`
 	} `yaml:"llm"`
 
 	MCP struct {
-		Retry struct {
+		Timeout time.Duration `yaml:"timeout"`
+		Retry   struct {
 			Attempts   int           `yaml:"attempts"`
 			Backoff    time.Duration `yaml:"backoff"`
 			MaxBackoff time.Duration `yaml:"max_backoff"`
 		} `yaml:"retry"`
+		CircuitBreaker struct {
+			FailureThreshold int           `yaml:"failure_threshold"`
+			OpenDuration     time.Duration `yaml:"open_duration"`
+		} `yaml:"circuit_breaker"`
 		Bitbucket  MCPServerConfig `yaml:"bitbucket"`
 		Jira       MCPServerConfig `yaml:"jira"`
 		Confluence MCPServerConfig `yaml:"confluence"`
@@ -79,7 +92,7 @@ type Config struct {
 
 	Webhook WebhookConfig `yaml:"webhook"`
 
-	Agent AgentConfig `yaml:"agent"`
+	Pipeline PipelineConfig `yaml:"pipeline"`
 
 	Storage StorageConfig `yaml:"storage"`
 }
@@ -91,41 +104,47 @@ type StorageConfig struct {
 	Timeout time.Duration `yaml:"timeout"` // Timeout for storage operations (default: 5s)
 }
 
-// AgentConfig holds configuration for the PR review agent
-type AgentConfig struct {
-	Backend               string `yaml:"backend"`                 // adk, langchain, direct (default: adk)
-	MaxIterations         int    `yaml:"max_iterations"`          // Max agent loop iterations (default: 20)
-	MaxToolCalls          int    `yaml:"max_tool_calls"`          // Max total tool calls per review (default: 50)
-	MaxConcurrentComments int    `yaml:"max_concurrent_comments"` // Max concurrent comments posting (default: 5)
-	DirectMode            bool   `yaml:"direct_mode"`             // Deprecated: use Backend: "direct" instead
-	MaxDirectChars        int    `yaml:"max_direct_chars"`        // Max characters for direct mode (default: 40000)
+// PipelineConfig holds configuration for the 3-stage review pipeline
+type PipelineConfig struct {
+	Enabled               bool   `yaml:"enabled"`
+	Backend               string `yaml:"backend"` // direct or agent
+	MaxConcurrentComments int    `yaml:"max_concurrent_comments"`
+	ResponseMaxStringLen  int    `yaml:"response_max_string_len"`
 
-	ResponseFilter struct {
-		MaxStringLen int `yaml:"max_string_len"` // Max string length in tool output (default: 2000)
-	} `yaml:"response_filter"`
-
-	ChunkReview   ChunkReviewConfig   `yaml:"chunk_review"`
-	DirectContext DirectContextConfig `yaml:"direct_context"`
+	Stage1Diff    Stage1Config       `yaml:"stage1_diff"`
+	Stage2Context Stage2Config       `yaml:"stage2_context"`
+	Stage3Review  Stage3Config       `yaml:"stage3_review"`
+	CommentMerge  CommentMergeConfig `yaml:"comment_merge"`
 }
 
-// DirectContextConfig configures what context to fetch in direct mode
-type DirectContextConfig struct {
-	FetchCommitInfo  bool `yaml:"fetch_commit_info"`
-	FetchFileContent bool `yaml:"fetch_file_content"`
-	MaxFileSize      int  `yaml:"max_file_size"`
+type CommentMergeConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	HighSeverityMerge   string `yaml:"high_severity_merge"` // "by_file" | "none" (none = Hybrid Mode)
+	LowSeverityMerge    string `yaml:"low_severity_merge"`  // "to_summary" | "none"
+	IncludeLowInSummary bool   `yaml:"include_low_in_summary"`
 }
 
-// ChunkReviewConfig holds configuration for chunked PR review
-type ChunkReviewConfig struct {
-	Enabled           bool `yaml:"enabled"`              // Enable chunked review for large PRs
-	MaxTokensPerChunk int  `yaml:"max_tokens_per_chunk"` // Max tokens per chunk (default: 40000)
-	MaxFilesPerChunk  int  `yaml:"max_files_per_chunk"`  // Max files per chunk (default: 10)
-	ParallelChunks    int  `yaml:"parallel_chunks"`      // Max concurrent chunk reviews (default: 3)
-	ContextLines      int  `yaml:"context_lines"`        // Context lines to preserve when splitting (default: 20)
-	FoldDeletesOver   int  `yaml:"fold_deletes_over"`    // Fold deletes over N lines (default: 10)
-	RemoveWhitespace  bool `yaml:"remove_whitespace"`    // Remove whitespace from diff (default: false)
-	CompressSpaces    bool `yaml:"compress_spaces"`      // Compress consecutive spaces (default: true)
-	RemoveBinaryDiff  bool `yaml:"remove_binary_diff"`   // Remove binary files from diff (default: true)
+type Stage1Config struct {
+	PromptTemplate string `yaml:"prompt_template"`
+}
+
+type Stage2Config struct {
+	PromptTemplate string `yaml:"prompt_template"`
+	MaxExtraFiles  int    `yaml:"max_extra_files"`
+	MaxFileSize    int    `yaml:"max_file_size"`
+}
+
+type Stage3Config struct {
+	PromptTemplate   string            `yaml:"prompt_template"`
+	Temperature      float64           `yaml:"temperature"`
+	MaxContextTokens int               `yaml:"max_context_tokens"`
+	Degradation      DegradationConfig `yaml:"degradation"`
+}
+
+type DegradationConfig struct {
+	L1ContextLines int  `yaml:"l1_context_lines"` // L1: Lines of context to keep around changes (default: 50)
+	L2ChunkByFile  bool `yaml:"l2_chunk_by_file"` // L2: Enable chunking by file (default: true)
+	L3DiffOnly     bool `yaml:"l3_diff_only"`     // L3: Fallback to diff only (default: true)
 }
 
 // GetLogLevel returns the slog.Level based on Log.Level string
@@ -154,28 +173,40 @@ func LoadConfig() *Config {
 	cfg.Server.ConcurrencyLimit = 10
 	cfg.Server.ReadTimeout = 10 * time.Second
 	cfg.Server.WriteTimeout = 30 * time.Second
+	cfg.Server.ShutdownTimeout = 30 * time.Second
 	cfg.Server.MaxBodySize = DefaultMaxBodySize
 	cfg.LLM.Endpoint = "https://api.openai.com/v1"
 	cfg.LLM.Model = "gpt-4o"
+	cfg.LLM.Timeout = 120 * time.Second
+	cfg.LLM.MaxConcurrency = 1
+	cfg.MCP.Timeout = 30 * time.Second
 	cfg.MCP.Retry.Attempts = 3
 	cfg.MCP.Retry.Backoff = 1 * time.Second
 	cfg.MCP.Retry.MaxBackoff = 30 * time.Second
+	cfg.MCP.CircuitBreaker.FailureThreshold = 3
+	cfg.MCP.CircuitBreaker.OpenDuration = 30 * time.Second
 	cfg.Prompts.Dir = "prompts"
 	cfg.Webhook.MaxRetries = 2
 
-	// Agent defaults
-	cfg.Agent.MaxIterations = 40
-	cfg.Agent.MaxToolCalls = 50
-	cfg.Agent.MaxConcurrentComments = 5
-	cfg.Agent.MaxDirectChars = 40000
-	cfg.Agent.ResponseFilter.MaxStringLen = 2000
-	cfg.Agent.ChunkReview.MaxTokensPerChunk = 40000
-	cfg.Agent.ChunkReview.MaxFilesPerChunk = 10
-	cfg.Agent.ChunkReview.ContextLines = 20
-	cfg.Agent.ChunkReview.FoldDeletesOver = 10
-	cfg.Agent.ChunkReview.RemoveWhitespace = false
-	cfg.Agent.ChunkReview.CompressSpaces = true
-	cfg.Agent.ChunkReview.RemoveBinaryDiff = true
+	// Pipeline defaults
+	cfg.Pipeline.Enabled = true
+	cfg.Pipeline.Backend = "direct"
+	cfg.Pipeline.MaxConcurrentComments = 5     // Default limit
+	cfg.Pipeline.ResponseMaxStringLen = 100000 // Default limit
+	cfg.Pipeline.Stage1Diff.PromptTemplate = "pipeline/stage1.md"
+	cfg.Pipeline.Stage2Context.PromptTemplate = "pipeline/stage2.md"
+	cfg.Pipeline.Stage2Context.MaxExtraFiles = 5
+	cfg.Pipeline.Stage2Context.MaxFileSize = 50000
+	cfg.Pipeline.Stage3Review.PromptTemplate = "pipeline/stage3.md"
+	cfg.Pipeline.Stage3Review.Temperature = 0.0
+	cfg.Pipeline.Stage3Review.MaxContextTokens = 256000
+	cfg.Pipeline.Stage3Review.Degradation.L1ContextLines = 50
+	cfg.Pipeline.Stage3Review.Degradation.L2ChunkByFile = true
+	cfg.Pipeline.Stage3Review.Degradation.L3DiffOnly = true
+	cfg.Pipeline.CommentMerge.Enabled = true
+	cfg.Pipeline.CommentMerge.HighSeverityMerge = "by_file"
+	cfg.Pipeline.CommentMerge.LowSeverityMerge = "to_summary"
+	cfg.Pipeline.CommentMerge.IncludeLowInSummary = true
 
 	// Log Rotation defaults
 	cfg.Log.Rotation.MaxSize = 100
@@ -211,29 +242,6 @@ func LoadConfig() *Config {
 	cfg.MCP.Jira.Token = getEnv("JIRA_MCP_TOKEN", cfg.MCP.Jira.Token)
 	cfg.MCP.Confluence.Token = getEnv("CONFLUENCE_MCP_TOKEN", cfg.MCP.Confluence.Token)
 
-	// Support for existing environment variables for backward compatibility (optional but keep some common ones)
-	if envPort := getEnvInt("PORT", 0); envPort != 0 {
-		cfg.Server.Port = envPort
-	}
-	if envLogLevel := os.Getenv("LOG_LEVEL"); envLogLevel != "" {
-		cfg.Log.Level = envLogLevel
-	}
-	if envLogFormat := os.Getenv("LOG_FORMAT"); envLogFormat != "" {
-		cfg.Log.Format = envLogFormat
-	}
-	if envLogOutput := getEnv("LOG_OUTPUT", ""); envLogOutput != "" {
-		cfg.Log.Output = envLogOutput
-	}
-	if envLogMaxSize := getEnvInt("LOG_MAX_SIZE", 0); envLogMaxSize != 0 {
-		cfg.Log.Rotation.MaxSize = envLogMaxSize
-	}
-	if envLogMaxBackups := getEnvInt("LOG_MAX_BACKUPS", 0); envLogMaxBackups != 0 {
-		cfg.Log.Rotation.MaxBackups = envLogMaxBackups
-	}
-	if envLogMaxAge := getEnvInt("LOG_MAX_AGE", 0); envLogMaxAge != 0 {
-		cfg.Log.Rotation.MaxAge = envLogMaxAge
-	}
-
 	return cfg
 }
 
@@ -264,17 +272,6 @@ func (c *Config) Validate() error {
 
 func getEnv(key, fallback string) string {
 	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	valueStr := getEnv(key, "")
-	if valueStr == "" {
-		return fallback
-	}
-	if value, err := strconv.Atoi(valueStr); err == nil {
 		return value
 	}
 	return fallback

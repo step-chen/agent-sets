@@ -13,13 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
+	"pr-review-automation/internal/pipeline"
 
-	"iter"
-
-	"google.golang.org/adk/model"
+	"github.com/openai/openai-go"
 )
 
 // MockProcessor implements processor.Processor for testing
@@ -34,18 +32,18 @@ func (m *MockProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullR
 	return nil
 }
 
-// MockLLM implements model.LLM and TextQuerier for testing
+// MockLLM implements llm.Client for testing
 type MockLLM struct {
 	SimpleQueryFunc func(ctx context.Context, prompt, input string) (string, error)
+	ChatFunc        func(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error)
 }
 
-func (m *MockLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
-	return func(yield func(*model.LLMResponse, error) bool) {}
+func (m *MockLLM) Chat(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
+	if m.ChatFunc != nil {
+		return m.ChatFunc(ctx, params)
+	}
+	return &openai.ChatCompletion{}, nil
 }
-
-func (m *MockLLM) Name() string { return "mock-llm" }
-
-func (m *MockLLM) Ping(ctx context.Context) error { return nil }
 
 func (m *MockLLM) SimpleTextQuery(ctx context.Context, systemPrompt, userInput string) (string, error) {
 	if m.SimpleQueryFunc != nil {
@@ -61,7 +59,7 @@ func createTestParser(t *testing.T, llm *MockLLM) *PayloadParser {
 	os.MkdirAll(filepath.Join(tmpDir, "system"), 0755)
 	os.WriteFile(filepath.Join(tmpDir, "system/pr_webhook_parser.md"), []byte("dummy prompt"), 0644)
 
-	loader := agent.NewPromptLoader(tmpDir)
+	loader := pipeline.NewPromptLoader(tmpDir)
 	return NewPayloadParser(config.WebhookConfig{}, llm, loader, nil)
 }
 
@@ -72,6 +70,7 @@ func TestBitbucketWebhookHandler_MethodNotAllowed(t *testing.T) {
 			ConcurrencyLimit int64         `yaml:"concurrency_limit"`
 			ReadTimeout      time.Duration `yaml:"read_timeout"`
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
+			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
 			WebhookSecret    string        `yaml:"-"`
 		}{
@@ -99,6 +98,7 @@ func TestBitbucketWebhookHandler_InvalidJSON(t *testing.T) {
 			ConcurrencyLimit int64         `yaml:"concurrency_limit"`
 			ReadTimeout      time.Duration `yaml:"read_timeout"`
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
+			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
 			WebhookSecret    string        `yaml:"-"`
 		}{
@@ -133,6 +133,7 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L1(t *testing.T) {
 			ConcurrencyLimit int64         `yaml:"concurrency_limit"`
 			ReadTimeout      time.Duration `yaml:"read_timeout"`
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
+			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
 			WebhookSecret    string        `yaml:"-"`
 		}{
@@ -200,6 +201,7 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L2(t *testing.T) {
 			ConcurrencyLimit int64         `yaml:"concurrency_limit"`
 			ReadTimeout      time.Duration `yaml:"read_timeout"`
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
+			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
 			WebhookSecret    string        `yaml:"-"`
 		}{
@@ -272,6 +274,7 @@ func TestBitbucketWebhookHandler_BodySizeLimit(t *testing.T) {
 			ConcurrencyLimit int64         `yaml:"concurrency_limit"`
 			ReadTimeout      time.Duration `yaml:"read_timeout"`
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
+			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
 			WebhookSecret    string        `yaml:"-"`
 		}{

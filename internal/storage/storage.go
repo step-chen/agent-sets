@@ -2,19 +2,18 @@ package storage
 
 import (
 	"context"
-	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/domain"
 	"time"
 )
 
 // ReviewRecord Review persistence record
 type ReviewRecord struct {
-	ID          string              `json:"id"`
-	PullRequest *domain.PullRequest `json:"pull_request"`
-	Result      *agent.ReviewResult `json:"result"`
-	CreatedAt   time.Time           `json:"created_at"`
-	DurationMs  int64               `json:"duration_ms"`
-	Status      string              `json:"status"` // success, error
+	ID          string               `json:"id"`
+	PullRequest *domain.PullRequest  `json:"pull_request"`
+	Result      *domain.ReviewResult `json:"result"`
+	CreatedAt   time.Time            `json:"created_at"`
+	DurationMs  int64                `json:"duration_ms"`
+	Status      string               `json:"status"` // success, error
 }
 
 // Repository Storage interface

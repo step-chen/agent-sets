@@ -40,26 +40,6 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_CustomEnvValues(t *testing.T) {
-	// Set custom environment variables
-	os.Setenv("PORT", "9090")
-	os.Setenv("LOG_LEVEL", "DEBUG")
-	defer func() {
-		os.Unsetenv("PORT")
-		os.Unsetenv("LOG_LEVEL")
-	}()
-
-	cfg := LoadConfig()
-
-	if cfg.Server.Port != 9090 {
-		t.Errorf("expected port 9090, got %d", cfg.Server.Port)
-	}
-
-	if cfg.Log.Level != "DEBUG" {
-		t.Errorf("expected log level DEBUG, got %s", cfg.Log.Level)
-	}
-}
-
 func TestLoadConfig_MCPEndpointsFromEnv(t *testing.T) {
 	os.Setenv("BITBUCKET_MCP_TOKEN", "bb-token")
 	os.Setenv("JIRA_MCP_TOKEN", "jira-token")

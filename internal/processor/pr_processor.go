@@ -6,18 +6,16 @@ import (
 	"fmt"
 	"log/slog"
 
-	"pr-review-automation/internal/agent"
+	// "pr-review-automation/internal/agent" // Removed agent dependency for types
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/storage"
 	"pr-review-automation/internal/validator"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
-	"golang.org/x/sync/errgroup"
 )
 
 // Processor defines the interface for processing pull requests
@@ -27,7 +25,7 @@ type Processor interface {
 
 // Reviewer defines the interface for reviewing pull requests
 type Reviewer interface {
-	ReviewPR(ctx context.Context, req *agent.ReviewRequest) (*agent.ReviewResult, error)
+	ReviewPR(ctx context.Context, req *domain.ReviewRequest) (*domain.ReviewResult, error)
 }
 
 // Commenter defines the interface for posting comments
@@ -65,7 +63,7 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 	existingComments := p.fetchExistingAIComments(ctx, pr)
 
 	// 2. Build Review Request
-	req := &agent.ReviewRequest{
+	req := &domain.ReviewRequest{
 		PR:                 pr,
 		HistoricalComments: existingComments,
 	}
@@ -95,8 +93,6 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 	review.Comments = newComments
 
 	// Persist review result (Audit Only)
-	// Persist review result (Audit Only)
-	// Persist review result (Audit Only)
 	if p.storage != nil {
 		// Save synchronously to ensure data safety on exit
 		saveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.Storage.Timeout)
@@ -116,191 +112,7 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 
 	slog.Info("posting comments", "count", len(review.Comments))
 
-	pullRequestId, err := strconv.Atoi(pr.ID)
-	if err != nil {
-		slog.Error("invalid pr id", "pr_id", pr.ID)
-		return fmt.Errorf("invalid pr id: %s", pr.ID)
-	}
-
-	// Use errgroup to post comments in parallel
-	// Limit concurrency to avoid overwhelming Bitbucket API
-	limit := p.cfg.Agent.MaxConcurrentComments
-	if limit <= 0 {
-		limit = 5
-	}
-	g, gCtx := errgroup.WithContext(ctx)
-	g.SetLimit(limit)
-
-	for _, comment := range review.Comments {
-		// Capture loop variable
-		comment := comment
-		g.Go(func() error {
-			args := map[string]interface{}{
-				"projectKey":    pr.ProjectKey,
-				"repoSlug":      pr.RepoSlug,
-				"pullRequestId": pullRequestId,
-				"commentText":   fmt.Sprintf("%s%s:%d:%s%s\n%s", config.MarkerAIReviewPrefix, comment.File, comment.Line, pr.LatestCommit, config.MarkerAIReviewSuffix, comment.Comment),
-			}
-
-			if comment.File != "" {
-				args["filePath"] = comment.File
-				if comment.Line > 0 {
-					args["lineNumber"] = comment.Line
-				}
-			}
-
-			// Use gCtx for cancellation propagation, but be careful if gCtx is cancelled by one failure
-			// we might want independent failures. But errgroup cancels all on first error by default.
-			slog.Debug("post comment", "file", comment.File, "line", comment.Line)
-			_, err := p.commenter.CallTool(gCtx, config.MCPServerBitbucket, config.ToolBitbucketAddComment, args)
-			if err != nil {
-				slog.Error("post comment failed",
-					"pr_id", pr.ID,
-					"file", comment.File,
-					"error", err)
-				metrics.CommentPostFailures.WithLabelValues("api_error").Inc()
-				// Return nil to allow other comments to proceed (Best Effort)
-				return nil
-			}
-			return nil
-		})
-	}
-
-	// Wait for all comments to be posted
-	g.Wait()
-
-	// Post summary comment (more important than individual comments)
-	if review.Summary != "" {
-		args := map[string]interface{}{
-			"projectKey":    pr.ProjectKey,
-			"repoSlug":      pr.RepoSlug,
-			"pullRequestId": pullRequestId,
-			"commentText":   fmt.Sprintf("**AI Review Summary (Model: %s)**\nScore: %d\n\n%s", review.Model, review.Score, review.Summary),
-		}
-
-		_, err := p.commenter.CallTool(ctx, "bitbucket", "bitbucket_add_pull_request_comment", args)
-		if err != nil {
-			slog.Error("post summary failed",
-				"pr_id", pr.ID,
-				"error", err)
-			// Track summary failures separately as they're more critical than individual comments
-			metrics.CommentPostFailures.WithLabelValues("summary_error").Inc()
-		}
-	}
-
-	// Cleanup session history to prevent memory leaks
-	if cleaner, ok := p.commenter.(interface{ ClearSessionHistory(string) }); ok {
-		cleaner.ClearSessionHistory("pr-" + pr.ID)
-	}
-
-	return nil
-}
-
-// fetchExistingAIComments fetches existing comments from Bitbucket and filters for AI comments
-func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.PullRequest) []agent.ReviewComment {
-	// Call bitbucket_get_pull_request_comments
-	// Convert PR ID to int
-	prID, _ := strconv.Atoi(pr.ID)
-	result, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetComments, map[string]interface{}{
-		"projectKey":    pr.ProjectKey,
-		"repoSlug":      pr.RepoSlug,
-		"pullRequestId": prID,
-	})
-	if err != nil {
-		slog.Warn("fetch existing comments failed", "error", err)
-		return nil
-	}
-
-	// Marshaling result to JSON to parse with gjson
-	jsonBytes, err := json.Marshal(result)
-	if err != nil {
-		slog.Warn("marshal comments failed", "error", err)
-		return nil
-	}
-	jsonStr := string(jsonBytes)
-
-	var comments []agent.ReviewComment
-
-	// Parse using gjson
-	// Assuming structure: { "values": [ { "content": { "raw": "..." }, "inline": { "path": "...", "from": 123 } } ] }
-	gjson.Get(jsonStr, "values").ForEach(func(key, value gjson.Result) bool {
-		rawContent := value.Get("content.raw").String()
-
-		// Check for AI marker
-		if strings.Contains(rawContent, config.MarkerAIReviewPrefix) || strings.Contains(rawContent, config.MarkerAIReviewVisible) {
-			path := value.Get("inline.path").String()
-			// 'to' is usually the line number in PR diffs for added/modified lines in Bitbucket
-			line := int(value.Get("inline.to").Int())
-
-			// If path/line not in inline (e.g. general comment), try to parse from marker
-			if path == "" {
-				// Parse from marker: <!-- ai-review:file:line -->
-				if start := strings.Index(rawContent, config.MarkerAIReviewPrefix); start != -1 {
-					end := strings.Index(rawContent[start:], config.MarkerAIReviewSuffix)
-					if end != -1 {
-						marker := rawContent[start : start+end]
-						parts := strings.Split(marker, ":")
-						if len(parts) >= 3 {
-							path = parts[1]
-							if l, err := strconv.Atoi(parts[2]); err == nil {
-								line = l
-							}
-						}
-					}
-				}
-			}
-
-			// Clean comment content (remove marker)
-			cleanComment := rawContent
-			// Remove HTML comments
-			if idx := strings.Index(cleanComment, config.MarkerAIReviewSuffix); idx != -1 {
-				cleanComment = strings.TrimSpace(cleanComment[idx+len(config.MarkerAIReviewSuffix):])
-			}
-
-			if path != "" {
-				comments = append(comments, agent.ReviewComment{
-					File:    path,
-					Line:    line,
-					Comment: cleanComment,
-				})
-			}
-		}
-		return true // keep iterating
-	})
-
-	return comments
-}
-
-// filterDuplicates filters out comments that have already been made
-func (p *PRProcessor) filterDuplicates(newComments, existingComments []agent.ReviewComment) []agent.ReviewComment {
-	if len(existingComments) == 0 {
-		return newComments
-	}
-
-	existingSet := make(map[string]bool)
-	for _, c := range existingComments {
-		fp := p.semanticFingerprint(c)
-		existingSet[fp] = true
-	}
-
-	var filtered []agent.ReviewComment
-	for _, c := range newComments {
-		if !existingSet[p.semanticFingerprint(c)] {
-			filtered = append(filtered, c)
-		}
-	}
-	return filtered
-}
-
-// semanticFingerprint creates a fingerprint for a comment based on file and content keywords
-func (p *PRProcessor) semanticFingerprint(c agent.ReviewComment) string {
-	// Simple fingerprint: file + first 50 chars of comment (lowercase)
-	// This avoids line number dependency
-	content := strings.ToLower(strings.TrimSpace(c.Comment))
-	if len(content) > 50 {
-		content = content[:50]
-	}
-	return fmt.Sprintf(config.DedupeKeySemanticFormat, c.File, content)
+	return p.postComments(ctx, pr, review, existingComments)
 }
 
 // fetchDiff retrieves the PR diff from Bitbucket for comment validation
@@ -341,28 +153,4 @@ func (p *PRProcessor) fetchDiff(ctx context.Context, pr *domain.PullRequest) str
 		}
 	}
 	return res
-}
-
-// validateComments validates comments against diff ranges
-// Returns valid comments and invalid comments (for potential general comment conversion)
-func (p *PRProcessor) validateComments(comments []agent.ReviewComment, v *validator.CommentValidator) (valid, invalid []agent.ReviewComment) {
-	for _, c := range comments {
-		if c.File == "" || c.Line == 0 {
-			// General comment (no file/line) - always valid
-			valid = append(valid, c)
-			continue
-		}
-
-		if v.IsValid(c.File, c.Line) {
-			valid = append(valid, c)
-		} else {
-			reason := v.GetInvalidReason(c.File, c.Line)
-			slog.Warn("invalid comment line",
-				"file", c.File,
-				"line", c.Line,
-				"reason", reason)
-			invalid = append(invalid, c)
-		}
-	}
-	return
 }

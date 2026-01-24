@@ -19,11 +19,15 @@ const (
 // AI Review Markers
 const (
 	// MarkerAIReviewPrefix is the HTML comment start for AI metadata
-	MarkerAIReviewPrefix = "<!-- ai-review:"
+	MarkerAIReviewPrefix = "<!-- ai-review::"
 	// MarkerAIReviewSuffix is the HTML comment end
 	MarkerAIReviewSuffix = "-->"
 	// MarkerAIReviewVisible is the visible Markdown identifier
 	MarkerAIReviewVisible = "**AI Review**"
+
+	// New marker types
+	MarkerTypeFile    = "file"
+	MarkerTypeSummary = "summary"
 )
 
 // Deduplication Key Formats
@@ -50,16 +54,6 @@ var TokenLimitErrorKeywords = []string{
 	"token limit",
 	"too many tokens",
 }
-
-// Path cleaning prefixes
-const (
-	PathPrefixGitSource      = "a/"
-	PathPrefixGitDestination = "b/"
-	PathPrefixSVNSource      = "src/trunk/"
-	PathPrefixSVNDest        = "dst/trunk/"
-	PathPrefixSVNSourceURI   = "src://trunk/"
-	PathPrefixSVNDestURI     = "dst://trunk/"
-)
 
 // MCP Server Names
 const (

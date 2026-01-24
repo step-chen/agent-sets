@@ -2,7 +2,7 @@ package splitter
 
 import (
 	"log/slog"
-	"pr-review-automation/internal/config"
+	"pr-review-automation/internal/domain"
 	"regexp"
 	"strings"
 )
@@ -55,7 +55,7 @@ func NewDiffSplitterWithContext(maxTokens, maxFiles, contextLines int) *DiffSpli
 // Split parses a unified diff and splits it into chunks
 // Strategy: Prioritize file boundaries, then split by hunks with context preservation
 func (s *DiffSplitter) Split(fullDiff string) []DiffChunk {
-	files := s.parseFiles(fullDiff)
+	files := s.ParseFiles(fullDiff)
 	if len(files) == 0 {
 		return nil
 	}
@@ -67,8 +67,8 @@ func (s *DiffSplitter) Split(fullDiff string) []DiffChunk {
 	return s.groupIntoChunks(files)
 }
 
-// parseFiles extracts individual file diffs from a unified diff
-func (s *DiffSplitter) parseFiles(fullDiff string) []FileDiff {
+// ParseFiles extracts individual file diffs from a unified diff
+func (s *DiffSplitter) ParseFiles(fullDiff string) []FileDiff {
 	// Match diff headers: "diff --git a/path b/path" or "diff --git src://trunk/path dst://trunk/path"
 	// Captures destination path (second path in the header)
 	diffPattern := regexp.MustCompile(`(?m)^diff --git\s+\S+\s+(\S+?)(?:\s|$)`)
@@ -89,9 +89,7 @@ func (s *DiffSplitter) parseFiles(fullDiff string) []FileDiff {
 
 		content := fullDiff[start:end]
 		path := fullDiff[match[2]:match[3]] // First capture group (b/path)
-		path = strings.TrimPrefix(path, config.PathPrefixGitDestination)
-		path = strings.TrimPrefix(path, config.PathPrefixSVNDest)
-		path = strings.TrimPrefix(path, config.PathPrefixSVNDestURI)
+		path = domain.NormalizePath(path)
 
 		files = append(files, FileDiff{
 			Path:    path,
@@ -128,9 +126,7 @@ func (s *DiffSplitter) parseSimpleDiff(fullDiff string) []FileDiff {
 
 		content := fullDiff[start:end]
 		path := strings.TrimSpace(fullDiff[match[2]:match[3]])
-		path = strings.TrimPrefix(path, config.PathPrefixGitSource)
-		path = strings.TrimPrefix(path, config.PathPrefixSVNSource)
-		path = strings.TrimPrefix(path, config.PathPrefixSVNSourceURI)
+		path = domain.NormalizePath(path)
 
 		files = append(files, FileDiff{
 			Path:    path,

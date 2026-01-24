@@ -1,202 +1,103 @@
 # =============================================================================
-# PR Review Automation Configuration Template
-#
-# This file serves as a reference for all available configuration options.
-# Copy this file to 'config.yaml' and adjust the values as needed.
-#
-# Note: Sensitive information like API keys and secrets should preferably be
-# set via environment variables (see README.md), but can be defined here for development.
+# PR Review Automation Configuration (Example)
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Logging Configuration
-# Controls application logging behavior, format, and rotation policies.
-# -----------------------------------------------------------------------------
 log:
-  # Logging level. Options: DEBUG, INFO, WARN, ERROR.
-  level: INFO
-
-  # Log format. Options: text (human-readable), json (machine-parsable).
-  format: text
-
-  # Log output destination. Options: stdout, stderr, or a file path (e.g., "app.log").
-  output: stdout
-
-  # Log rotation settings (applies only if output is a file).
+  level: INFO                   # Log level (DEBUG, INFO, WARN, ERROR)
+  format: text                  # Log format (text, json)
+  output: stdout,logs/app.log   # Log output (stdout, stderr, file path)
   rotation:
-    max_size: 100 # Maximum size in megabytes before rotating.
-    max_backups: 10 # Maximum number of old log files to retain.
-    max_age: 7 # Maximum number of days to retain old log files.
-    compress: true # Whether to compress rotated log files (gzip).
+    max_size: 100               # Max size of a single log file (MB)
+    max_backups: 10             # Max number of old log files to retain
+    max_age: 7                  # Max number of days to retain old log files
+    compress: true              # Whether to compress old log files
 
-# -----------------------------------------------------------------------------
-# Server Configuration
-# Settings for the HTTP server handling webhooks and requests.
-# -----------------------------------------------------------------------------
 server:
-  # The port on which the server listens.
-  port: 8080
+  port: 8080                    # Server listening port
+  concurrency_limit: 10         # Concurrency limit for requests
+  read_timeout: 10s             # Timeout for reading request body
+  write_timeout: 30s            # Timeout for writing response
+  shutdown_timeout: 30s         # Timeout for graceful shutdown
+  max_body_size: 2097152        # Max request body size (bytes, default 2MB)
 
-  # Maximum number of concurrent requests the server will process.
-  concurrency_limit: 10
-
-  # Maximum duration for reading the entire request, including the body.
-  read_timeout: 10s
-
-  # Maximum duration before timing out writes of the response.
-  write_timeout: 30s
-
-  # Maximum allowed size for request bodies in bytes (default: 2MB).
-  max_body_size: 2097152
-
-# -----------------------------------------------------------------------------
-# LLM (Large Language Model) Configuration
-# Connection details for the AI model used for code review.
-# -----------------------------------------------------------------------------
 llm:
-  # The name of the model to use (e.g., gpt-4o, gpt-4-turbo).
-  model: gpt-4o
+  model: qwen3-coder            # LLM model name
+  endpoint: http://localhost:8081/v1 # LLM API endpoint (OpenAI compatible)
+  timeout: 120s                 # LLM request timeout
+  max_concurrency: 1            # Max concurrent LLM requests
 
-  # The API endpoint for the LLM provider.
-  endpoint: https://api.openai.com/v1
-
-  # API Key. It is RECOMMENDED to set this via the LLM_API_KEY environment variable.
-  # api_key: "sk-..."
-
-# -----------------------------------------------------------------------------
-# MCP (Model Context Protocol) Configuration
-# Settings for connecting to external tools/services via MCP servers.
-# -----------------------------------------------------------------------------
 mcp:
-  # Retry policy for MCP tool calls.
   retry:
-    attempts: 3 # Number of retry attempts for failed tool calls.
-    backoff: 1s # Initial backoff duration.
-    max_backoff: 30s # Maximum backoff duration.
+    attempts: 3                 # MCP call retry attempts
+    backoff: 1s                 # Initial retry backoff duration
+    max_backoff: 30s            # Max retry backoff duration
+  
+  timeout: 30s                  # MCP tool call timeout
+  circuit_breaker:              # Circuit breaker configuration
+    failure_threshold: 3        # Number of consecutive failures to trigger circuit breaker
+    open_duration: 30s          # Duration to keep circuit open
 
-  # Bitbucket MCP Server Configuration
   bitbucket:
-    endpoint: http://bitbucket-mcp:8080
-    # List of specific tools to allow.
-    # If this list is empty, commented out, or missing, ALL tools provided by the server will be allowed.
-    # allowed_tools:
-    #   - capabilities
-    #   - bitbucket_get_pull_request
-    #   - bitbucket_get_pull_request_diff
-    #   - bitbucket_get_pull_request_changes
-    #   - bitbucket_get_pull_request_comments
-    #   - bitbucket_get_file_content
-    #   - bitbucket_add_pull_request_comment
-    #   - bitbucket_get_commits
-    #   - bitbucket_get_pull_request_activities
-    #   - bitbucket_get_diff_between_commits
-    #   - bitbucket_get_commit
+    endpoint: http://localhost:8082 # Bitbucket MCP server endpoint
+    auth_header: Bitbucket-Token    # Authorization header name
+    allowed_tools:                  # Whitelist of allowed tools
+      - capabilities
+      - bitbucket_get_pull_request
+      - bitbucket_get_pull_request_diff
+      - bitbucket_get_pull_request_changes
+      - bitbucket_get_pull_request_comments
+      - bitbucket_get_file_content
+      - bitbucket_add_pull_request_comment
+      - bitbucket_get_commits
+      - bitbucket_get_diff_between_commits
+      - bitbucket_get_commit
+    
+    response_filters:           # Response filter configuration
+      - name: "truncate"        # Filter name: truncate
+        options:
+          max_len: 100000       # Max length limit
 
-  # Jira MCP Server Configuration
   jira:
-    endpoint: http://jira-mcp:8080
-    # List of specific tools to allow.
-    # If this list is empty, commented out, or missing, ALL tools provided by the server will be allowed.
-    # allowed_tools:
-    #   - jira_get_issue
-    #   - jira_search_issues
-    #   - jira_get_project
-    #   - jira_get_transitions
+    endpoint: ""                # Jira MCP server endpoint (leave empty to disable)
+    auth_header: Jira-Token     # Authorization header name
+    allowed_tools: []           # Whitelist of allowed tools
 
-  # Confluence MCP Server Configuration
   confluence:
-    # endpoint: http://confluence-mcp:8080 # Uncomment if Confluence is used
-    # List of specific tools to allow.
-    # If this list is empty, commented out, or missing, ALL tools provided by the server will be allowed.
-    # allowed_tools:
-    #   - confluence_search_content
-    #   - confluence_get_content_by_id
-    #   - confluence_get_content_children
-    #   - confluence_get_spaces
+    endpoint: ""                # Confluence MCP server endpoint (leave empty to disable)
+    auth_header: Confluence-Token # Authorization header name
+    allowed_tools: []           # Whitelist of allowed tools
 
-# -----------------------------------------------------------------------------
-# Webhook Configuration
-# Settings specific to incoming webhook processing.
-# -----------------------------------------------------------------------------
 webhook:
-  # Maximum number of retries for L2 extraction (using LLM to parse payload)
-  # if the initial L1 extraction fails.
-  max_retries: 2
+  max_retries: 3                # Max retries for webhook processing failures
 
-# -----------------------------------------------------------------------------
-# Agent Configuration
-# Controls the behavior of the AI agent performing code reviews.
-# -----------------------------------------------------------------------------
-agent:
-  # The backend implementation to use.
-  # Options:
-  #   - adk (Google's Agent Development Kit)
-  #   - langchain (LangChainGo implementation)
-  #   - direct (Simple, non-agentic prompt-completion mode)
-  backend: adk
-
-  # Maximum number of iterations (turn loops) the agent can perform per review.
-  max_iterations: 40
-
-  # Maximum total number of tool calls allowed per review session.
-  max_tool_calls: 50
-
-  # Maximum number of comments the agent can post concurrently to Bitbucket.
-  max_concurrent_comments: 5
-
-  # Limit on input characters when using 'direct' mode to prevent context overflow.
-  max_direct_chars: 40000
-
-  # Filters to clean up tool outputs before sending to LLM (saves tokens).
-  response_filter:
-    max_string_len: 2000 # Truncate long strings in tool responses.
-
-  # Configuration for "Chunked Review" strategy (processing large PRs in parts).
-  chunk_review:
-    enabled: true # Enable chunking strategy.
-
-    # Token limits for each chunk.
-    max_tokens_per_chunk: 40000
-
-    # Maximum number of files to include in a single chunk.
-    max_files_per_chunk: 10
-
-    # Maximum number of chunks to process in parallel.
-    parallel_chunks: 3
-
-    # Number of context lines to preserve when splitting diffs.
-    context_lines: 20
-
-    # Threshold to fold/collapse large blocks of deleted lines to save context.
-    fold_deletes_over: 10
-
-    # Whether to remove whitespace-only changes from the diff.
-    remove_whitespace: false
-
-    # Whether to compress consecutive spaces to a single space.
-    compress_spaces: true
-
-    # Whether to exclude binary files from the diff analysis.
-    remove_binary_diff: true
-
-# -----------------------------------------------------------------------------
-# Prompts Configuration
-# Settings for loading system and user prompts.
-# -----------------------------------------------------------------------------
 prompts:
-  # Directory containing prompt template files (markdown).
-  dir: prompts
+  dir: prompts                  # Directory for prompt template files
 
-# -----------------------------------------------------------------------------
-# Storage Configuration
-# Settings for persistent storage of review history and verification data.
-# -----------------------------------------------------------------------------
+pipeline:
+  enabled: true                 # Enable pipeline mode (Stage 1-3)
+  backend: direct               # Backend mode: direct (LLM direct) or agent (Agentic)
+  max_concurrent_comments: 5    # Max concurrent comments to submit
+  response_max_string_len: 100000 # Max string length for response
+
+  stage2_context:               # Stage 2: Context enrichment config
+    max_extra_files: 5          # Max extra files to include
+    max_file_size: 50000        # Max file size to read (bytes)
+
+  stage3_review:                # Stage 3: Code review config
+    temperature: 0.0            # LLM temperature
+    max_context_tokens: 256000  # Max context token limit
+    degradation:                # Degradation strategy (when context limit exceeded)
+      l1_context_lines: 50      # L1: Context lines to keep around changes
+      l2_chunk_by_file: true    # L2: Chunk processing by file
+      l3_diff_only: true        # L3: Fallback to diff only (skip reading full file)
+
+  comment_merge:                # Comment merge strategy
+    enabled: true               # Enable comment merging
+    high_severity_merge: "none" # Merge strategy for high severity: "by_file" (per file), "none" (inline)
+    low_severity_merge: "to_summary" # Merge strategy for low severity: "to_summary", "none"
+    include_low_in_summary: true # Include low severity issues in summary
+
 storage:
-  # Storage driver. Currently supports: sqlite.
-  driver: sqlite
-
-  # Data Source Name. For SQLite, this is the file path.
-  dsn: "data/reviews.db"
-
-  # Timeout for database operations.
-  timeout: 5s
+  driver: sqlite                # Storage driver (sqlite supported)
+  dsn: "data/reviews.db"        # Database connection string / file path
+  timeout: 5s                   # Storage operation timeout

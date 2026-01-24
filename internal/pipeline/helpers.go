@@ -1,13 +1,14 @@
-package agent
+package pipeline
 
 import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strconv"
-
+	"path/filepath"
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
+	"strconv"
+	"strings"
 
 	"github.com/tidwall/gjson"
 )
@@ -28,19 +29,13 @@ func ExtractString(data any, keys ...string) string {
 		return s
 	}
 
-	// Marshal to JSON for query
+	// Marshaling to JSON for query
 	b, err := json.Marshal(data)
 	if err != nil {
 		return ""
 	}
 
 	jsonStr := string(b)
-	shortJSON := jsonStr
-	if len(shortJSON) > 200 {
-		shortJSON = shortJSON[:200] + "..."
-	}
-	slog.Debug("ExtractString searching", "keys", keys, "json_snippet", shortJSON)
-
 	for _, k := range keys {
 		val := gjson.GetBytes(b, k).String()
 		if val != "" {
@@ -53,7 +48,6 @@ func ExtractString(data any, keys ...string) string {
 	if jsonStr == "{}" || jsonStr == "[]" || jsonStr == "null" {
 		return ""
 	}
-	slog.Debug("ExtractString fallback to raw JSON")
 	return jsonStr
 }
 
@@ -64,7 +58,7 @@ type ToolInvoker interface {
 
 // FetchChangedFiles retrieves the list of changed file paths from the PR.
 // Returns empty slice on error (falls back to default language).
-func FetchChangedFiles(ctx context.Context, invoker ToolInvoker, pr *domain.PullRequest) []string {
+func FetchChangedFiles(ctx context.Context, invoker ToolInvoker, pr domain.PullRequest) []string {
 	// pr.ID is string, converting to int for MCP
 	prID, _ := strconv.Atoi(pr.ID)
 	result, err := invoker.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetChanges, map[string]interface{}{
@@ -94,4 +88,48 @@ func FetchChangedFiles(ctx context.Context, invoker ToolInvoker, pr *domain.Pull
 		})
 	}
 	return files
+}
+
+// languageExtensions maps file extensions to language identifiers
+var languageExtensions = map[string]string{
+	".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".c": "cpp", ".h": "cpp", ".hpp": "cpp", ".hxx": "cpp",
+	".go":   "golang",
+	".py":   "python",
+	".java": "java",
+	".ts":   "typescript", ".tsx": "typescript",
+	".js": "javascript", ".jsx": "javascript",
+	".rs": "rust",
+	".kt": "kotlin", ".kts": "kotlin",
+	".swift": "swift",
+	".rb":    "ruby",
+	".cs":    "csharp",
+}
+
+// DetectLanguage detects the primary language from a list of file paths
+// based on file extensions. Returns "default" if no language is detected.
+func DetectLanguage(files []string) string {
+	counts := make(map[string]int)
+
+	for _, file := range files {
+		ext := strings.ToLower(filepath.Ext(file))
+		if lang, ok := languageExtensions[ext]; ok {
+			counts[lang]++
+		}
+	}
+
+	if len(counts) == 0 {
+		return "default"
+	}
+
+	// Find the language with the most files
+	maxLang := "default"
+	maxCount := 0
+	for lang, count := range counts {
+		if count > maxCount {
+			maxCount = count
+			maxLang = lang
+		}
+	}
+
+	return maxLang
 }

@@ -3,35 +3,45 @@ package client
 import (
 	"context"
 	"testing"
+	"time" // Added for time.Second
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestNewMCPTransport_Stdio(t *testing.T) {
-	transport, err := NewMCPTransport(context.Background(), "stdio://echo hello", "", "")
-	if err != nil {
-		t.Fatalf("NewMCPTransport failed: %v", err)
-	}
-	if transport == nil {
-		t.Fatal("Expected transport to be non-nil")
-	}
-	// Cannot easily verify internal type without reflection or interface check,
-	// but success implies it worked.
-}
+func TestNewMCPTransport(t *testing.T) { // Renamed and restructured
+	// Test stdio scheme
+	t.Run("stdio scheme", func(t *testing.T) {
+		t.Parallel()
+		// We use "echo" as a command that exists
+		transport, err := NewMCPTransport(context.Background(), "stdio://echo", "", "", 30*time.Second)
+		if err != nil {
+			t.Fatalf("NewMCPTransport failed: %v", err)
+		}
+		if _, ok := transport.(*mcp.CommandTransport); !ok {
+			t.Errorf("expected CommandTransport, got %T", transport)
+		}
+	})
 
-func TestNewMCPTransport_SSE(t *testing.T) {
-	transport, err := NewMCPTransport(context.Background(), "http://localhost:8080/sse", "token", "")
-	if err != nil {
-		t.Fatalf("NewMCPTransport failed: %v", err)
-	}
-	if transport == nil {
-		t.Fatal("Expected transport to be non-nil")
-	}
-}
+	// Test http scheme (partially mocked as we don't start server here, just check type)
+	t.Run("http scheme", func(t *testing.T) {
+		t.Parallel()
+		transport, err := NewMCPTransport(context.Background(), "http://localhost:8080/sse", "token", "header", 30*time.Second)
+		if err != nil {
+			t.Fatalf("NewMCPTransport failed: %v", err)
+		}
+		if _, ok := transport.(*mcp.SSEClientTransport); !ok {
+			t.Errorf("expected SSEClientTransport, got %T", transport)
+		}
+	})
 
-func TestNewMCPTransport_Invalid(t *testing.T) {
-	_, err := NewMCPTransport(context.Background(), "invalid://endpoint", "", "")
-	if err == nil {
-		t.Fatal("Expected error for invalid scheme")
-	}
+	// Test unsupported scheme
+	t.Run("unsupported scheme", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewMCPTransport(context.Background(), "ftp://localhost", "", "", 30*time.Second)
+		if err == nil {
+			t.Error("expected error for unsupported scheme, got nil")
+		}
+	})
 }
 
 func TestSplitWithQuotes(t *testing.T) {

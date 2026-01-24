@@ -19,12 +19,14 @@ The service is configured via environment variables. Please prepare the followin
 
 ### Core Configuration
 
-| Variable         | Required | Description              | Example                     |
-| :--------------- | :------- | :----------------------- | :-------------------------- |
-| `LLM_API_KEY`    | Yes      | Google Gemini API Key    | `AIzaSy...`                 |
-| `LLM_ENDPOINT`   | No       | LLM Gateway Address      | `https://ai.example.com/v1` |
-| `PORT`           | No       | Service Listening Port   | `8080`                      |
-| `WEBHOOK_SECRET` | No       | Bitbucket Webhook Secret | `your-secure-secret`        |
+| Variable              | Required | Description              | Example                     |
+| :-------------------- | :------- | :----------------------- | :-------------------------- |
+| `LLM_API_KEY`         | Yes      | Google Gemini API Key    | `AIzaSy...`                 |
+| `LLM_ENDPOINT`        | No       | LLM Gateway Address      | `https://ai.example.com/v1` |
+| `LLM_TIMEOUT`         | No       | Request Timeout          | `120s`                      |
+| `LLM_MAX_CONCURRENCY` | No       | Max Concurrent Requests  | `1`                         |
+| `PORT`                | No       | Service Listening Port   | `8080`                      |
+| `WEBHOOK_SECRET`      | No       | Bitbucket Webhook Secret | `your-secure-secret`        |
 
 ### MCP Service Connection (Bitbucket)
 
@@ -54,6 +56,25 @@ In addition to environment variables, the service supports advanced configuratio
 
 > [!TIP]
 > In Docker environments, this directory is mounted at `/app/prompts` by default. If you change this path, ensure you update the volume mount in `docker-compose.yaml`.
+
+### Comment Merging (Hybrid Mode)
+
+| YAML Path                                    | Description                                                     | Default      |
+| :------------------------------------------- | :-------------------------------------------------------------- | :----------- |
+| `pipeline.comment_merge.enabled`             | Enable/Disable comment merging                                  | `true`       |
+| `pipeline.comment_merge.high_severity_merge` | `by_file` (merged) or `none` (Hybrid Mode - individual inline)  | `none`       |
+| `pipeline.comment_merge.low_severity_merge`  | `to_summary` (merged into summary table) or `none` (individual) | `to_summary` |
+
+### Reliability Configuration
+
+| YAML Path                               | Description                       | Default |
+| :-------------------------------------- | :-------------------------------- | :------ |
+| `server.shutdown_timeout`               | Graceful shutdown timeout         | `30s`   |
+| `llm.timeout`                           | LLM API timeout                   | `120s`  |
+| `llm.max_concurrency`                   | Max concurrent LLM requests       | `1`     |
+| `mcp.timeout`                           | MCP tool call timeout             | `30s`   |
+| `mcp.circuit_breaker.failure_threshold` | Circuit breaker failure threshold | `3`     |
+| `mcp.circuit_breaker.open_duration`     | Circuit breaker open duration     | `30s`   |
 
 ---
 

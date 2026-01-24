@@ -3,6 +3,7 @@ package aggregator
 import (
 	"fmt"
 	"pr-review-automation/internal/config"
+	"pr-review-automation/internal/domain"
 	"strings"
 )
 
@@ -10,25 +11,10 @@ import (
 type ChunkReviewResult struct {
 	ChunkID     int
 	TotalChunks int
-	Comments    []ReviewComment
+	Comments    []domain.ReviewComment
 	Score       int
 	Summary     string
 	Error       error
-}
-
-// ReviewComment represents a single review comment
-type ReviewComment struct {
-	File    string `json:"file"`
-	Line    int    `json:"line"`
-	Comment string `json:"comment"`
-}
-
-// AggregatedResult represents the final combined review result
-type AggregatedResult struct {
-	Comments []ReviewComment
-	Score    int
-	Summary  string
-	Model    string
 }
 
 // ResultAggregator combines results from multiple chunk reviews
@@ -40,15 +26,15 @@ func NewResultAggregator() *ResultAggregator {
 }
 
 // Aggregate combines multiple chunk review results into a single result
-func (a *ResultAggregator) Aggregate(results []ChunkReviewResult) *AggregatedResult {
+func (a *ResultAggregator) Aggregate(results []ChunkReviewResult) *domain.ReviewResult {
 	if len(results) == 0 {
-		return &AggregatedResult{
+		return &domain.ReviewResult{
 			Score:   0,
 			Summary: "No review results available.",
 		}
 	}
 
-	var allComments []ReviewComment
+	var allComments []domain.ReviewComment
 	var validScores []int
 	var summaries []string
 	var errors []string
@@ -82,7 +68,7 @@ func (a *ResultAggregator) Aggregate(results []ChunkReviewResult) *AggregatedRes
 	// Combine summaries
 	combinedSummary := a.combineSummaries(summaries, errors, len(results))
 
-	return &AggregatedResult{
+	return &domain.ReviewResult{
 		Comments: dedupedComments,
 		Score:    avgScore,
 		Summary:  combinedSummary,
@@ -90,12 +76,12 @@ func (a *ResultAggregator) Aggregate(results []ChunkReviewResult) *AggregatedRes
 }
 
 // deduplicateComments removes duplicate comments (same file + same content)
-func (a *ResultAggregator) deduplicateComments(comments []ReviewComment) []ReviewComment {
+func (a *ResultAggregator) deduplicateComments(comments []domain.ReviewComment) []domain.ReviewComment {
 	seen := make(map[string]bool)
-	var result []ReviewComment
+	var result []domain.ReviewComment
 
 	for _, c := range comments {
-		key := a.semanticFingerprint(c)
+		key := c.Fingerprint()
 		if !seen[key] {
 			seen[key] = true
 			result = append(result, c)
@@ -103,17 +89,6 @@ func (a *ResultAggregator) deduplicateComments(comments []ReviewComment) []Revie
 	}
 
 	return result
-}
-
-// semanticFingerprint creates a fingerprint for a comment based on file and content keywords
-func (a *ResultAggregator) semanticFingerprint(c ReviewComment) string {
-	// Simple fingerprint: file + first 50 chars of comment (lowercase)
-	// This avoids line number dependency and allows multiple comments on the same line
-	content := strings.ToLower(strings.TrimSpace(c.Comment))
-	if len(content) > 50 {
-		content = content[:50]
-	}
-	return fmt.Sprintf(config.DedupeKeySemanticFormat, c.File, content)
 }
 
 // combineSummaries creates a unified summary from chunk summaries

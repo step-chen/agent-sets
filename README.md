@@ -284,6 +284,9 @@ Handles Webhook events from Bitbucket Data Center:
 7. ✅ **Graceful Shutdown**: Supports signal-triggered graceful shutdown.
 8. ✅ **Persistent Storage**: Saves review history and metrics to SQLite.
 9. ✅ **Smart Deduplication**: Native Bitbucket deduplication prevents redundant comments across commits.
+10. ✅ **Smart Deduplication**: Native Bitbucket deduplication prevents redundant comments across commits.
+11. ✅ **Hybrid Commenting Mode**: Posts high-severity issues as individual inline comments (for precise line anchoring) while merging low-severity suggestions into a summary table (to reduce noise).
+12. ✅ **Reliability**: Comprehensive timeouts (shutdown, LLM, MCP), concurrency control, and circuit breakers for external dependencies.
 
 ---
 

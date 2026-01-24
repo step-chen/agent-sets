@@ -8,22 +8,16 @@ import (
 	"log/slog"
 	"time"
 
-	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/filter"
+	"pr-review-automation/internal/llm"
 	"pr-review-automation/internal/metrics"
+	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/types"
 
 	"github.com/tidwall/gjson"
-	"google.golang.org/adk/model"
 )
-
-// TextQuerier is an interface that allows simple text-based interaction with an LLM.
-// This is used to assert the capability of the provided model.LLM.
-type TextQuerier interface {
-	SimpleTextQuery(ctx context.Context, systemPrompt, userInput string) (string, error)
-}
 
 // PayloadParser is responsible for extracting PullRequest domain models from raw JSON payloads.
 // It employs a two-layer strategy:
@@ -31,16 +25,16 @@ type TextQuerier interface {
 // L2: Robust, LLM-based extraction for unknown structures.
 type PayloadParser struct {
 	cfg           config.WebhookConfig
-	llm           model.LLM
-	promptLoader  *agent.PromptLoader
+	llm           llm.Client
+	promptLoader  *pipeline.PromptLoader
 	payloadFilter filter.PayloadFilter
 }
 
 // NewPayloadParser creates a new PayloadParser.
-func NewPayloadParser(cfg config.WebhookConfig, llm model.LLM, promptLoader *agent.PromptLoader, payloadFilter filter.PayloadFilter) *PayloadParser {
+func NewPayloadParser(cfg config.WebhookConfig, client llm.Client, promptLoader *pipeline.PromptLoader, payloadFilter filter.PayloadFilter) *PayloadParser {
 	return &PayloadParser{
 		cfg:           cfg,
-		llm:           llm,
+		llm:           client,
 		promptLoader:  promptLoader,
 		payloadFilter: payloadFilter,
 	}
@@ -149,7 +143,7 @@ func probe(body []byte, paths []string) gjson.Result {
 // askLLMToExtract implements the L2 parsing strategy using LLM.
 func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*domain.PullRequest, error) {
 	// 1. Prepare Prompt
-	sysPrompt, err := p.promptLoader.LoadPrompt("system/pr_webhook_parser")
+	sysPrompt, err := p.promptLoader.LoadPrompt("system/pr_webhook_parser", nil)
 	if err != nil {
 		// Fallback prompt if loader fails
 		sysPrompt = "You are a JSON parser. Extract id, projectKey, repoSlug, title, description, authorName as JSON."
@@ -159,13 +153,7 @@ func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*doma
 	// 2. Truncate Body
 	truncated := p.truncateForLLM(body)
 
-	// 3. Assert Interface
-	querier, ok := p.llm.(TextQuerier)
-	if !ok {
-		return nil, fmt.Errorf("llm does not support simple text query")
-	}
-
-	// 4. Retry Logic
+	// 3. Retry Logic
 	maxRetries := p.cfg.MaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 2
@@ -184,7 +172,7 @@ func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*doma
 		}
 
 		// Execute LLM Call
-		respText, err := querier.SimpleTextQuery(ctx, sysPrompt, truncated)
+		respText, err := p.llm.SimpleTextQuery(ctx, sysPrompt, truncated)
 		if err == nil {
 			// Clean up response (sometimes LLMs include markdown blocks)
 			respText = types.CleanJSONFromMarkdown(respText)

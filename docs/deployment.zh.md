@@ -19,12 +19,14 @@
 
 ### 核心配置
 
-| 变量名           | 必填 | 说明                       | 示例                        |
-| :--------------- | :--- | :------------------------- | :-------------------------- |
-| `LLM_API_KEY`    | 是   | Google Gemini API 密钥     | `AIzaSy...`                 |
-| `LLM_ENDPOINT`   | 否   | LLM 网关地址               | `https://ai.example.com/v1` |
-| `PORT`           | 否   | 服务监听端口               | `8080`                      |
-| `WEBHOOK_SECRET` | 否   | Bitbucket Webhook 签名密钥 | `your-secure-secret`        |
+| 变量名                | 必填 | 说明                       | 示例                        |
+| :-------------------- | :--- | :------------------------- | :-------------------------- |
+| `LLM_API_KEY`         | 是   | Google Gemini API 密钥     | `AIzaSy...`                 |
+| `LLM_ENDPOINT`        | 否   | LLM 网关地址               | `https://ai.example.com/v1` |
+| `LLM_TIMEOUT`         | 否   | 请求超时时间               | `120s`                      |
+| `LLM_MAX_CONCURRENCY` | 否   | 最大并发请求数             | `1`                         |
+| `PORT`                | 否   | 服务监听端口               | `8080`                      |
+| `WEBHOOK_SECRET`      | 否   | Bitbucket Webhook 签名密钥 | `your-secure-secret`        |
 
 ### MCP 服务连接 (Bitbucket)
 
@@ -54,6 +56,25 @@
 
 > [!TIP]
 > 在 Docker 环境中，该目录默认挂载在 `/app/prompts`。如果您修改了此路径，请确保同步更新 `docker-compose.yaml` 中的挂载点。
+
+### 评论合并策略 (混合模式)
+
+| YAML 路径                                    | 说明                                                   | 默认值       |
+| :------------------------------------------- | :----------------------------------------------------- | :----------- |
+| `pipeline.comment_merge.enabled`             | 是否启用评论合并                                       | `true`       |
+| `pipeline.comment_merge.high_severity_merge` | `by_file` (按文件合并) 或 `none` (混合模式-独立行内)   | `none`       |
+| `pipeline.comment_merge.low_severity_merge`  | `to_summary` (汇总至总结报告表格) 或 `none` (独立发布) | `to_summary` |
+
+### 可靠性配置
+
+| YAML 路径                               | 说明               | 默认值 |
+| :-------------------------------------- | :----------------- | :----- |
+| `server.shutdown_timeout`               | 优雅关闭超时时间   | `30s`  |
+| `llm.timeout`                           | LLM API 请求超时   | `120s` |
+| `llm.max_concurrency`                   | LLM 最大并发请求数 | `1`    |
+| `mcp.timeout`                           | MCP 工具调用超时   | `30s`  |
+| `mcp.circuit_breaker.failure_threshold` | 熔断器失败阈值     | `3`    |
+| `mcp.circuit_breaker.open_duration`     | 熔断器开启时长     | `30s`  |
 
 ---
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -34,12 +35,12 @@ func (t *TokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 
 // NewMCPTransport creates mcp.Transport based on endpoint and token.
 // Supports stdio:// and http(s):// schemes.
-func NewMCPTransport(ctx context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
+func NewMCPTransport(ctx context.Context, endpoint, token, authHeader string, timeout time.Duration) (mcp.Transport, error) {
 	switch {
 	case strings.HasPrefix(endpoint, "stdio://"):
 		return newStdioTransport(ctx, endpoint, token)
 	case strings.HasPrefix(endpoint, "http://"), strings.HasPrefix(endpoint, "https://"):
-		return newSSETransport(ctx, endpoint, token, authHeader)
+		return newSSETransport(ctx, endpoint, token, authHeader, timeout)
 	default:
 		return nil, fmt.Errorf("unsupported endpoint scheme: %s", endpoint)
 	}
@@ -60,7 +61,7 @@ func newStdioTransport(ctx context.Context, endpoint, token string) (mcp.Transpo
 	return &mcp.CommandTransport{Command: cmd}, nil
 }
 
-func newSSETransport(_ context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
+func newSSETransport(_ context.Context, endpoint, token, authHeader string, timeout time.Duration) (mcp.Transport, error) {
 	var httpClient *http.Client
 	if token != "" {
 		httpClient = &http.Client{
@@ -69,6 +70,12 @@ func newSSETransport(_ context.Context, endpoint, token, authHeader string) (mcp
 				Token:      token,
 				AuthHeader: authHeader,
 			},
+			Timeout: timeout,
+		}
+	} else {
+		// Even without token, we should set timeout
+		httpClient = &http.Client{
+			Timeout: timeout,
 		}
 	}
 	return &mcp.SSEClientTransport{

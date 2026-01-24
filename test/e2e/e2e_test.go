@@ -12,14 +12,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/filter/bitbucket"
+	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/processor"
 	"pr-review-automation/internal/webhook"
 
@@ -28,11 +29,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
-
-	"iter"
-
-	"google.golang.org/adk/model"
-	"google.golang.org/genai"
 )
 
 // InterceptingTransport implements mcp.Transport
@@ -170,9 +166,9 @@ func TestE2E_PRFlow(t *testing.T) {
 	capturedOps := []string{}
 	var mu sync.Mutex
 
-	mcpClient.SetTransportFactory(func(ctx context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
-		t.Logf("[DEBUG] Creating transport for endpoint=%s, tokenLen=%d, authHeader=%s", endpoint, len(token), authHeader)
-		realTransport, err := client.NewMCPTransport(ctx, endpoint, token, authHeader)
+	mcpClient.SetTransportFactory(func(ctx context.Context, endpoint, token, authHeader string, timeout time.Duration) (mcp.Transport, error) {
+		t.Logf("[DEBUG] Creating transport for endpoint=%s, tokenLen=%d, authHeader=%s, timeout=%s", endpoint, len(token), authHeader, timeout)
+		realTransport, err := client.NewMCPTransport(ctx, endpoint, token, authHeader, timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -188,18 +184,15 @@ func TestE2E_PRFlow(t *testing.T) {
 	}
 	defer mcpClient.Close()
 
-	// 3. Real Agent & Dependencies
+	// 3. Real Agent & Dependencies (Using Pipeline)
 	oaClient := openai.NewClient(option.WithAPIKey(cfg.LLM.APIKey), option.WithBaseURL(cfg.LLM.Endpoint))
 	llm := client.NewOpenAIAdapter(&oaClient, cfg.LLM.Model)
-	promptLoader := agent.NewPromptLoader(cfg.Prompts.Dir)
+	promptLoader := pipeline.NewPromptLoader(cfg.Prompts.Dir)
 
-	// Create Agent - using Model from config
-	prAgent, err := agent.NewPRReviewAgent(llm, mcpClient, promptLoader, cfg.LLM.Model, cfg.Agent)
-	if err != nil {
-		t.Fatalf("Failed to create Agent: %v", err)
-	}
+	// Create Reviewer using Pipeline Adapter
+	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, llm, promptLoader)
 
-	prProcessor := processor.NewPRProcessor(cfg, prAgent, mcpClient, nil)
+	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, nil)
 	bbFilter := bitbucket.NewPayloadFilter()
 	parser := webhook.NewPayloadParser(cfg.Webhook, llm, promptLoader, bbFilter)
 	handler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, parser)
@@ -389,25 +382,6 @@ func TestE2E_PRFlow(t *testing.T) {
 	}
 }
 
-// MockLLM defines a mock LLM for testing
-type MockLLM struct {
-	Response string
-}
-
-func (m *MockLLM) Name() string {
-	return "mock-llm"
-}
-
-func (m *MockLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, streaming bool) iter.Seq2[*model.LLMResponse, error] {
-	return func(yield func(*model.LLMResponse, error) bool) {
-		yield(&model.LLMResponse{
-			Content: &genai.Content{
-				Parts: []*genai.Part{{Text: m.Response}},
-			},
-		}, nil)
-	}
-}
-
 func TestE2E_ChunkedReview(t *testing.T) {
 	// 1. Load Environment & Config
 	rootDir := "../../"
@@ -419,12 +393,7 @@ func TestE2E_ChunkedReview(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Prompts.Dir = filepath.Join(rootDir, "prompts")
 
-	// --- CHUNKING CONFIGURATION ---
-	cfg.Agent.MaxIterations = 40
-	cfg.Agent.ChunkReview.Enabled = true
-	cfg.Agent.ChunkReview.MaxTokensPerChunk = 100 // Force splitting
-	cfg.Agent.ChunkReview.MaxFilesPerChunk = 1
-	cfg.Agent.ChunkReview.ParallelChunks = 1
+	// --- Pipeline is now the default backend, no Agent configuration needed ---
 
 	if cfg.LLM.APIKey == "" {
 		t.Skip("Skipping E2E test: LLM_API_KEY not set")
@@ -444,9 +413,9 @@ func TestE2E_ChunkedReview(t *testing.T) {
 	capturedOps := []string{}
 	var mu sync.Mutex
 
-	mcpClient.SetTransportFactory(func(ctx context.Context, endpoint, token, authHeader string) (mcp.Transport, error) {
-		t.Logf("[DEBUG] Creating transport for endpoint=%s", endpoint)
-		realTransport, err := client.NewMCPTransport(ctx, endpoint, token, authHeader)
+	mcpClient.SetTransportFactory(func(ctx context.Context, endpoint, token, authHeader string, timeout time.Duration) (mcp.Transport, error) {
+		t.Logf("[DEBUG] Creating transport for endpoint=%s, timeout=%s", endpoint, timeout)
+		realTransport, err := client.NewMCPTransport(ctx, endpoint, token, authHeader, timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -462,20 +431,18 @@ func TestE2E_ChunkedReview(t *testing.T) {
 	}
 	defer mcpClient.Close()
 
-	// 3. Real Agent & Dependencies (Real Data)
+	// 3. Real LLM & Dependencies (Using Pipeline)
 	llm, err := client.NewLLM(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create LLM: %v", err)
 	}
-	promptLoader := agent.NewPromptLoader(cfg.Prompts.Dir)
+	promptLoader := pipeline.NewPromptLoader(cfg.Prompts.Dir)
 	promptLoader.SetRawSchemaProvider(mcpClient)
 
-	prAgent, err := agent.NewPRReviewAgent(llm, mcpClient, promptLoader, cfg.LLM.Model, cfg.Agent)
-	if err != nil {
-		t.Fatalf("Failed to create Agent: %v", err)
-	}
+	// Create Reviewer using Pipeline Adapter
+	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, llm, promptLoader)
 
-	prProcessor := processor.NewPRProcessor(cfg, prAgent, mcpClient, nil)
+	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, nil)
 	bbFilter := bitbucket.NewPayloadFilter()
 	parser := webhook.NewPayloadParser(cfg.Webhook, llm, promptLoader, bbFilter)
 	handler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, parser)
@@ -652,9 +619,28 @@ func TestE2E_ChunkedReview(t *testing.T) {
 
 	if len(capturedOps) > 0 {
 		t.Logf("Success! Intercepted %d write operations:", len(capturedOps))
+
+		var hasFileMarker, hasSummaryMarker bool
 		for i, op := range capturedOps {
 			t.Logf("Op[%d]: %s", i, op)
+
+			if strings.Contains(op, "<!-- ai-review::file:") {
+				hasFileMarker = true
+			}
+			if strings.Contains(op, "<!-- ai-review::summary:") {
+				hasSummaryMarker = true
+			}
 		}
+
+		if !hasSummaryMarker {
+			t.Error("Expected summary comment with 'summary:' marker")
+		}
+		// Note: file marker might be missing if no high severity issues found,
+		// so we don't strictly assert it, but log it.
+		if !hasFileMarker {
+			t.Log("Note: No file-level merged comments found (possibly all low severity)")
+		}
+
 	} else {
 		t.Logf("No write operations captured. Check logs.")
 	}

@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
-
-	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/domain"
+	"time"
 
 	_ "modernc.org/sqlite" // Pure Go driver, CGO-free, compatible with CGO_ENABLED=0
 )
@@ -161,7 +159,7 @@ func scanReview(s Scanner) (*ReviewRecord, error) {
 		return nil, fmt.Errorf("unmarshal pr: %w", err)
 	}
 
-	var result agent.ReviewResult
+	var result domain.ReviewResult
 	if err := json.Unmarshal([]byte(resultData), &result); err != nil {
 		return nil, fmt.Errorf("unmarshal result: %w", err)
 	}

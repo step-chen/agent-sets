@@ -46,7 +46,7 @@ func NewDiffPreprocessor(opts PreprocessOptions) *DiffPreprocessor {
 // Preprocess processes a full diff to reduce token usage
 func (p *DiffPreprocessor) Preprocess(diff string) string {
 	// Split by file
-	files := p.splitByFile(diff)
+	files := p.SplitByFile(diff)
 
 	var result []string
 	for _, file := range files {
@@ -66,8 +66,8 @@ func (p *DiffPreprocessor) Preprocess(diff string) string {
 	return output
 }
 
-// splitByFile splits a unified diff into per-file sections
-func (p *DiffPreprocessor) splitByFile(diff string) []string {
+// SplitByFile splits a unified diff into per-file sections
+func (p *DiffPreprocessor) SplitByFile(diff string) []string {
 	pattern := regexp.MustCompile(`(?m)^diff --git`)
 	indices := pattern.FindAllStringIndex(diff, -1)
 
@@ -93,13 +93,13 @@ func (p *DiffPreprocessor) processFile(fileDiff string) string {
 	// Check for binary file
 	if p.opts.RemoveBinaryDiff && p.isBinaryDiff(fileDiff) {
 		// Extract file path and return a summary
-		path := p.extractFilePath(fileDiff)
+		path := p.ExtractFilePath(fileDiff)
 		return "diff --git a/" + path + " b/" + path + "\n[BINARY FILE - SKIPPED]\n"
 	}
 
 	// Check for pure whitespace changes
 	if p.opts.RemoveWhitespace && p.isPureWhitespaceChange(fileDiff) {
-		path := p.extractFilePath(fileDiff)
+		path := p.ExtractFilePath(fileDiff)
 		return "diff --git a/" + path + " b/" + path + "\n[WHITESPACE ONLY - SKIPPED]\n"
 	}
 
@@ -213,8 +213,8 @@ func (p *DiffPreprocessor) isPureWhitespaceChange(fileDiff string) bool {
 	return !hasNonWhitespaceChange
 }
 
-// extractFilePath extracts the file path from a diff header
-func (p *DiffPreprocessor) extractFilePath(fileDiff string) string {
+// ExtractFilePath extracts the file path from a diff header
+func (p *DiffPreprocessor) ExtractFilePath(fileDiff string) string {
 	// Match both standard a/b paths and custom prefixes like src:// dst://
 	// Patterns:
 	// diff --git a/path b/path

@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"pr-review-automation/internal/domain"
 	"regexp"
 	"strconv"
 	"strings"
@@ -71,7 +72,9 @@ func (v *CommentValidator) parseDiff(diff string) {
 		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
 			// Deleted line - doesn't increment new file line number
 		} else if strings.HasPrefix(line, " ") || line == "" {
-			// Context line - increment line number but not valid for inline comment
+			// Context line - increment line number and also treat as valid for inline comment!
+			// We allow comments on context lines within the hunk to provide more comprehensive feedback.
+			v.addValidLine(currentFile, currentLineNum)
 			currentLineNum++
 		}
 	}
@@ -202,16 +205,7 @@ func (v *CommentValidator) GetValidRanges(file string) []LineRange {
 
 // normalizeFilePath normalizes file paths for comparison
 func (v *CommentValidator) normalizeFilePath(file string) string {
-	// Remove common prefixes (use centralized constants)
-	file = strings.TrimPrefix(file, "a/")
-	file = strings.TrimPrefix(file, "b/")
-	file = strings.TrimPrefix(file, "src://")
-	file = strings.TrimPrefix(file, "dst://")
-	// Handle SVN trunk prefixes
-	file = strings.TrimPrefix(file, "trunk/")
-	file = strings.TrimPrefix(file, "src/trunk/")
-	file = strings.TrimPrefix(file, "dst/trunk/")
-	return file
+	return domain.NormalizePath(file)
 }
 
 func abs(x int) int {

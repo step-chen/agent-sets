@@ -1,6 +1,7 @@
 package aggregator
 
 import (
+	"pr-review-automation/internal/domain"
 	"testing"
 )
 
@@ -9,12 +10,12 @@ func TestResultAggregator_DeduplicateComments(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		comments []ReviewComment
+		comments []domain.ReviewComment
 		want     int // Expected number of unique comments
 	}{
 		{
 			name: "No duplicates",
-			comments: []ReviewComment{
+			comments: []domain.ReviewComment{
 				{File: "main.go", Line: 10, Comment: "Fix this"},
 				{File: "main.go", Line: 20, Comment: "Fix that"},
 			},
@@ -22,7 +23,7 @@ func TestResultAggregator_DeduplicateComments(t *testing.T) {
 		},
 		{
 			name: "Exact duplicates (same file, line, comment)",
-			comments: []ReviewComment{
+			comments: []domain.ReviewComment{
 				{File: "main.go", Line: 10, Comment: "Fix this"},
 				{File: "main.go", Line: 10, Comment: "Fix this"},
 			},
@@ -30,7 +31,7 @@ func TestResultAggregator_DeduplicateComments(t *testing.T) {
 		},
 		{
 			name: "Same file/line but different comment (should keep both)",
-			comments: []ReviewComment{
+			comments: []domain.ReviewComment{
 				{File: "main.go", Line: 10, Comment: "Security issue"},
 				{File: "main.go", Line: 10, Comment: "Performance issue"},
 			},
@@ -38,7 +39,7 @@ func TestResultAggregator_DeduplicateComments(t *testing.T) {
 		},
 		{
 			name: "Different file same content (should keep both)",
-			comments: []ReviewComment{
+			comments: []domain.ReviewComment{
 				{File: "a.go", Line: 10, Comment: "Fix this"},
 				{File: "b.go", Line: 10, Comment: "Fix this"},
 			},
@@ -46,7 +47,7 @@ func TestResultAggregator_DeduplicateComments(t *testing.T) {
 		},
 		{
 			name: "Long comment truncation check",
-			comments: []ReviewComment{
+			comments: []domain.ReviewComment{
 				{File: "main.go", Line: 10, Comment: "This is a very long comment that exceeds the fifty character limit for fingerprinting and should be truncated..."},
 				{File: "main.go", Line: 10, Comment: "This is a very long comment that exceeds the fifty character limit for fingerprinting and should be truncated... duplication"},
 			},

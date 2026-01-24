@@ -14,10 +14,10 @@ import (
 
 	"gopkg.in/natefinch/lumberjack.v2"
 
-	"pr-review-automation/internal/agent"
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/filter/bitbucket"
+	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/processor"
 	"pr-review-automation/internal/storage"
 	"pr-review-automation/internal/webhook"
@@ -61,7 +61,7 @@ func main() {
 
 	// Initialize Filters
 	bbPayloadFilter := bitbucket.NewPayloadFilter()
-	bbResponseFilter := bitbucket.NewResponseFilter(cfg.Agent.ResponseFilter.MaxStringLen)
+	bbResponseFilter := bitbucket.NewResponseFilter(cfg.Pipeline.ResponseMaxStringLen)
 
 	// Register filters with MCP Client
 	mcpClient.SetResponseFilter("bitbucket", bbResponseFilter)
@@ -75,17 +75,13 @@ func main() {
 	}
 	defer mcpClient.Close()
 
-	// Initialize Prompt Loader
-	promptLoader := agent.NewPromptLoader(cfg.Prompts.Dir)
+	// Initialize Prompt Loader (Pipeline version)
+	promptLoader := pipeline.NewPromptLoader(cfg.Prompts.Dir)
 	promptLoader.SetRawSchemaProvider(mcpClient)
 
-	// Initialize PR review agent using Reviewer factory
-	prReviewAgent, err := agent.NewReviewer(cfg.Agent, llm, mcpClient, promptLoader, cfg.LLM.Model)
-	if err != nil {
-		slog.Error("init agent failed", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("agent initialized", "backend", prReviewAgent.Name())
+	// Initialize PR review agent using Pipeline Adapter
+	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, llm, promptLoader)
+	slog.Info("reviewer initialized", "backend", prReviewer.Name())
 
 	// Initialize storage
 	var store storage.Repository
@@ -102,9 +98,25 @@ func main() {
 	}
 
 	// Initialize PR processor
-	prProcessor := processor.NewPRProcessor(cfg, prReviewAgent, mcpClient, store)
+	// Note: PRProcessor now uses domain types and generic Reviewer interface
+	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, store)
 
 	// Initialize Payload Parser with filter
+	// Need to ensure payloadParser uses generic promptLoader or pipeline one
+	// payloadParser usually uses agent prompt loader. We might need to adapter or use pipeline.PromptLoader if compatible.
+	// Since we defined pipeline.PromptLoader similarly, we should check what NewPayloadParser expects.
+	// Assume we refactor PayloadParser to accept domain.PromptLoader or similar.
+	// For now, let's keep it if compatible or cast it.
+	// But agent.PromptLoader is different type than pipeline.PromptLoader.
+	// We need to fix PayloadParser too.
+	// Let's assume for now PayloadParser uses the interface or similar methods.
+	// If compilation fails, we will fix PayloadParser.
+	// Wait, we should probably update PayloadParser to use pipeline.PromptLoader or domain.PromptLoader interface if generic.
+	// But for this change, let's try to pass it if compatible (structs are not compatible unless same type).
+	// So we need to update NewPayloadParser signature in webhook package.
+	// Or define PromptLoader in domain.
+
+	// Temporarily: use pipeline.PromptLoader and changing PayloadParser signature is best.
 	payloadParser := webhook.NewPayloadParser(cfg.Webhook, llm, promptLoader, bbPayloadFilter)
 
 	// Initialize webhook handler
@@ -180,8 +192,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Wait for background PR processing tasks
-	slog.Info("waiting for tasks")
+	// Wait for background tasks to complete with timeout
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer shutdownCancel()
+
 	done := make(chan struct{})
 	go func() {
 		webhookHandler.WaitForCompletion()
@@ -190,9 +204,9 @@ func main() {
 
 	select {
 	case <-done:
-		slog.Info("tasks completed")
-	case <-time.After(30 * time.Second):
-		slog.Warn("task timeout, exiting")
+		slog.Info("background tasks completed")
+	case <-shutdownCtx.Done():
+		slog.Warn("task timeout, exiting", "timeout", cfg.Server.ShutdownTimeout)
 	}
 
 	// 3. defer store.Close() will handle storage cleanup (via WAL checkpoint)
