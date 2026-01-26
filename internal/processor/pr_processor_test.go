@@ -7,6 +7,7 @@ import (
 
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
+	"strings"
 )
 
 // MockReviewer mocks the Reviewer interface
@@ -76,6 +77,16 @@ index 123..456 100644
 +line 9
 +line 10`, nil
 			}
+			if toolName == config.ToolBitbucketAddComment {
+				// Verify lineNumber is string if present
+				if val, ok := args["lineNumber"]; ok {
+					if _, okStr := val.(string); !okStr {
+						// Create a mock testing.T-like panic or log since we don't have *testing.T here readily available inside the struct unless captured
+						// But for this simple mock, we can just panic to fail the test
+						panic("lineNumber must be a string")
+					}
+				}
+			}
 			return nil, nil
 		},
 	}
@@ -120,5 +131,59 @@ func TestPRProcessor_ProcessPullRequest_ReviewFail(t *testing.T) {
 	err := p.ProcessPullRequest(context.Background(), &domain.PullRequest{ID: "123"})
 	if err == nil {
 		t.Error("Expected error, got nil")
+	}
+}
+
+func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
+	// Setup mocks to return a summary with header
+	mockReviewer := &MockReviewer{
+		ReviewPRFunc: func(ctx context.Context, req *domain.ReviewRequest) (*domain.ReviewResult, error) {
+			return &domain.ReviewResult{
+				Comments: []domain.ReviewComment{}, // No comments to simplify
+				Score:    90,
+				Summary:  "# Bad Header\n# Another Header\nNormal text",
+			}, nil
+		},
+	}
+
+	var postedSummary string
+	mockCommenter := &MockCommenter{
+		CallToolFunc: func(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
+			if toolName == config.ToolBitbucketGetComments {
+				return `{"values":[]}`, nil
+			}
+			if toolName == config.ToolBitbucketGetDiff {
+				return `diff ...`, nil
+			}
+			if toolName == config.ToolBitbucketAddComment {
+				// Check if this is the summary comment (no lineNumber/filePath usually, or specific text)
+				if text, ok := args["commentText"].(string); ok {
+					if strings.Contains(text, "AI Review Summary") {
+						postedSummary = text
+					}
+				}
+			}
+			return nil, nil
+		},
+	}
+
+	// Enable comment merge to trigger summary posting
+	cfg := &config.Config{
+		Pipeline: config.PipelineConfig{
+			CommentMerge: config.CommentMergeConfig{
+				Enabled: true,
+			},
+		},
+	}
+	p := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil)
+	pr := &domain.PullRequest{ID: "123", ProjectKey: "PROJ", RepoSlug: "repo"}
+
+	p.ProcessPullRequest(context.Background(), pr)
+
+	if strings.Contains(postedSummary, "# Bad Header") {
+		t.Errorf("Summary should not contain headers. Got: %s", postedSummary)
+	}
+	if !strings.Contains(postedSummary, "**Bad Header**") {
+		t.Errorf("Summary should contain bolded text instead of header. Got: %s", postedSummary)
 	}
 }

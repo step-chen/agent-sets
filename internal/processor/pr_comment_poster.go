@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
@@ -69,7 +70,7 @@ func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullReq
 	// 2. Post summary with INFO/NIT appended
 	// Check if summary for this commit already exists
 	if !p.hasExistingSummary(existingComments, pr.LatestCommit) {
-		summaryText := review.Summary
+		summaryText := cleanSummaryMarkdown(review.Summary)
 		addonsText := merger.FormatSummaryAddons(result.SummaryAddons)
 
 		fullSummary := fmt.Sprintf("**AI Review Summary (Model: %s)**\nScore: %d\n\n%s%s",
@@ -126,7 +127,7 @@ func (p *PRProcessor) postIndividualComments(ctx context.Context, pr *domain.Pul
 			if comment.File != "" {
 				args["filePath"] = comment.File
 				if comment.Line > 0 {
-					args["lineNumber"] = comment.Line
+					args["lineNumber"] = strconv.Itoa(comment.Line)
 				}
 			}
 
@@ -152,4 +153,25 @@ func (p *PRProcessor) cleanupSession(prID string) error {
 		cleaner.ClearSessionHistory("pr-" + prID)
 	}
 	return nil
+}
+
+// cleanSummaryMarkdown removes header formatting from summary text to prevent huge fonts in Bitbucket
+func cleanSummaryMarkdown(summary string) string {
+	lines := strings.Split(summary, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			// Remove all leading # characters
+			content := strings.TrimLeft(trimmed, "#")
+			// Trim leading spaces that might have been between # and text
+			content = strings.TrimSpace(content)
+			// Restore line with bold formatting instead of header
+			if content != "" {
+				lines[i] = "**" + content + "**"
+			} else {
+				lines[i] = ""
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
