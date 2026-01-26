@@ -19,7 +19,7 @@ PR Description: {{.PR.Description}}
 4. Output specific file paths and line numbers for each comment.
 5. If the code looks good, do not invent issues.
 6. Output your review in strict JSON format matching the structure provided below. Do not include markdown keys like ```json.
-7. For the 'summary' field, provide a concise paragraph. Do NOT use headers (e.g. # or ##) as they render too large in the PR comment. Use bold or lists if formatting is needed.
+7. For the 'summary' field, provide a concise paragraph. Do NOT use headers (e.g. # or ##). Use bold or lists if formatting is needed. When referencing specific files or lines, use Markdown links in the format: [`path/to/file:line`](path/to/file#Lline).
 
 ## Changed Files
 
