@@ -96,7 +96,6 @@ pipeline:
     enabled: true               # Enable comment merging
     high_severity_merge: "none" # Merge strategy for high severity: "by_file" (per file), "none" (inline)
     low_severity_merge: "to_summary" # Merge strategy for low severity: "to_summary", "none"
-    include_low_in_summary: true # Include low severity issues in summary
 
 storage:
   driver: sqlite                # Storage driver (sqlite supported)

@@ -119,10 +119,9 @@ type PipelineConfig struct {
 }
 
 type CommentMergeConfig struct {
-	Enabled             bool   `yaml:"enabled"`
-	HighSeverityMerge   string `yaml:"high_severity_merge"` // "by_file" | "none" (none = Hybrid Mode)
-	LowSeverityMerge    string `yaml:"low_severity_merge"`  // "to_summary" | "none"
-	IncludeLowInSummary bool   `yaml:"include_low_in_summary"`
+	Enabled           bool   `yaml:"enabled"`
+	HighSeverityMerge string `yaml:"high_severity_merge"` // "by_file" | "none" (none = Hybrid Mode)
+	LowSeverityMerge  string `yaml:"low_severity_merge"`  // "to_summary" | "none"
 }
 
 type Stage1Config struct {
@@ -207,7 +206,6 @@ func LoadConfig() *Config {
 	cfg.Pipeline.CommentMerge.Enabled = true
 	cfg.Pipeline.CommentMerge.HighSeverityMerge = "by_file"
 	cfg.Pipeline.CommentMerge.LowSeverityMerge = "to_summary"
-	cfg.Pipeline.CommentMerge.IncludeLowInSummary = true
 
 	// Log Rotation defaults
 	cfg.Log.Rotation.MaxSize = 100
