@@ -19,5 +19,9 @@ func NewLLM(cfg *config.Config) (llm.Client, error) {
 	)
 	// Use NewOpenAIAdapterWithConfig to ensure endpoint and apiKey are stored for GetConfig()
 	// Unified Concurrency: Use Server.ConcurrencyLimit for LLM adapter
-	return NewOpenAIAdapterWithConfig(&client, cfg.LLM.Model, cfg.LLM.Endpoint, cfg.LLM.APIKey, int(cfg.Server.ConcurrencyLimit)), nil
+	adapter := NewOpenAIAdapterWithConfig(&client, cfg.LLM.Model, cfg.LLM.Endpoint, cfg.LLM.APIKey, int(cfg.Server.ConcurrencyLimit))
+	if cfg.LLM.Timeout > 0 {
+		adapter.SetTimeout(cfg.LLM.Timeout)
+	}
+	return adapter, nil
 }

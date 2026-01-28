@@ -27,8 +27,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
 )
 
 // InterceptingTransport implements mcp.Transport
@@ -185,8 +183,10 @@ func TestE2E_PRFlow(t *testing.T) {
 	defer mcpClient.Close()
 
 	// 3. Real Agent & Dependencies (Using Pipeline)
-	oaClient := openai.NewClient(option.WithAPIKey(cfg.LLM.APIKey), option.WithBaseURL(cfg.LLM.Endpoint))
-	llm := client.NewOpenAIAdapter(&oaClient, cfg.LLM.Model)
+	llm, err := client.NewLLM(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create LLM: %v", err)
+	}
 	promptLoader := pipeline.NewPromptLoader(cfg.Prompts.Dir)
 
 	// Create Reviewer using Pipeline Adapter

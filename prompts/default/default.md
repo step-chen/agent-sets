@@ -42,7 +42,9 @@
 
 ## Comment Line Rules (CRITICAL)
 
-1. **ONLY** comment on `+` lines (new/modified).
-2. **NEVER** comment on context or `-` lines.
-3. Use **exact NEW file line number**.
-4. Skip if unsure — do not guess.
+1. **STRICT LINE ADHERENCE**: You MUST ONLY comment on lines that are explicitly marked with `+` in the provided Diff/Changes.
+2. **NO CONTEXT/DELETED LINES**: NEVER comment on lines starting with ` ` (space) or `-` (minus). These are context or deleted lines.
+3. **FULL FILE TRAP**: Even if you use `bitbucket_get_file_content` to see the full file, you are **FORBIDDEN** from commenting on lines that are not part of the `+` lines in the original Diff.
+4. **Invalid Line = Invalid Comment**: Any comment on a line not starting with `+` in the diff will be automatically rejected.
+5. **Use New Line Numbers**: Use the specific line number from the "new" file version.
+6. Skip if unsure — do not guess.

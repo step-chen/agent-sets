@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"pr-review-automation/internal/types"
 
@@ -13,10 +14,12 @@ import (
 
 // OpenAIAdapter implements llm.Client interface using OpenAI official client
 type OpenAIAdapter struct {
-	client         *openai.Client
-	model          string
-	endpoint       string
+	client   *openai.Client
+	model    string
+	endpoint string
+	// ... fields
 	apiKey         string
+	timeout        time.Duration
 	maxConcurrency int
 	sem            chan struct{}
 }
@@ -50,9 +53,15 @@ func NewOpenAIAdapterWithConfig(client *openai.Client, model, endpoint, apiKey s
 		model:          model,
 		endpoint:       endpoint,
 		apiKey:         apiKey,
+		timeout:        120 * time.Second, // Default fallback
 		maxConcurrency: maxConcurrency,
 		sem:            sem,
 	}
+}
+
+// SetTimeout sets the request timeout
+func (a *OpenAIAdapter) SetTimeout(d time.Duration) {
+	a.timeout = d
 }
 
 // Name returns the model name
@@ -85,6 +94,13 @@ func (a *OpenAIAdapter) Ping(ctx context.Context) error {
 
 // Chat sends a chat completion request
 func (a *OpenAIAdapter) Chat(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
+	// Apply configured timeout if valid
+	if a.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, a.timeout)
+		defer cancel()
+	}
+
 	if a.sem != nil {
 		select {
 		case a.sem <- struct{}{}:
