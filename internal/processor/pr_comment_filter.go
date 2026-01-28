@@ -16,7 +16,6 @@ import (
 
 // validateComments validates comments against diff ranges
 func (p *PRProcessor) validateComments(comments []domain.ReviewComment, v *validator.CommentValidator) (valid, invalid []domain.ReviewComment) {
-	mergeEnabled := p.cfg.Pipeline.CommentMerge.Enabled
 	for _, c := range comments {
 		if c.File == "" || c.Line == 0 {
 			// General comment (no file/line) - always valid
@@ -24,20 +23,7 @@ func (p *PRProcessor) validateComments(comments []domain.ReviewComment, v *valid
 			continue
 		}
 
-		// If merge is enabled, comments are grouped by file and not strictly tied to inline diff lines.
-		// We only require that the file itself is part of the PR diff.
-		if mergeEnabled {
-			if v.FileInDiff(c.File) {
-				valid = append(valid, c)
-			} else {
-				slog.Warn("invalid comment file (merging enabled)",
-					"file", c.File,
-					"reason", "file not in diff")
-				invalid = append(invalid, c)
-			}
-			continue
-		}
-
+		// STRICT VALIDATION: Always ensure comment is on a valid diff line
 		if v.IsValid(c.File, c.Line) {
 			valid = append(valid, c)
 		} else {
@@ -109,6 +95,12 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 			// 'to' is usually the line number in PR diffs for added/modified lines in Bitbucket
 			line := int(value.Get("inline.to").Int())
 
+			// Check if content contains a table (Merged Comment)
+			tableComments := parseTableComments(rawContent)
+			if len(tableComments) > 0 {
+				comments = append(comments, tableComments...)
+			}
+
 			// If path/line not in inline (e.g. general comment), try to parse from marker
 			if path == "" {
 				// Parse from marker: <!-- ai-review:file:line -->
@@ -134,7 +126,8 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 				cleanComment = strings.TrimSpace(cleanComment[idx+len(config.MarkerAIReviewSuffix):])
 			}
 
-			if path != "" {
+			// Identify if this is a legacy/individual comment (not table)
+			if len(tableComments) == 0 && path != "" {
 				// Capture marker
 				var marker string
 				if start := strings.Index(rawContent, config.MarkerAIReviewPrefix); start != -1 {
@@ -155,6 +148,133 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 	})
 
 	return comments
+}
+
+// parseTableComments extracts comments from Markdown tables in the message
+func parseTableComments(content string) []domain.ReviewComment {
+	var comments []domain.ReviewComment
+
+	// Check for file path in header/marker
+	// Default file from marker if present e.g. <!-- ai-review::file:src/main.go:commit -->
+	var defaultFile string
+	if start := strings.Index(content, config.MarkerAIReviewPrefix+config.MarkerTypeFile+":"); start != -1 {
+		rest := content[start+len(config.MarkerAIReviewPrefix+config.MarkerTypeFile+":"):]
+		if idx := strings.Index(rest, ":"); idx != -1 {
+			defaultFile = rest[:idx]
+		}
+	}
+
+	lines := strings.Split(content, "\n")
+	inTable := false
+	tableType := "" // "file" or "summary"
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Detect table header
+		if strings.Contains(line, "| Line | Severity | Message |") {
+			inTable = true
+			tableType = "file"
+			continue
+		}
+		if strings.Contains(line, "| File | Line | Suggestion |") {
+			inTable = true
+			tableType = "summary"
+			continue
+		}
+		if strings.Contains(line, "|------|") {
+			continue
+		}
+
+		if inTable && strings.HasPrefix(line, "|") {
+			parts := strings.Split(line, "|")
+			if len(parts) < 4 {
+				continue // Invalid row
+			}
+
+			// Parse row based on type
+			// parts[0] is empty (before first |)
+			switch tableType {
+			case "file":
+				// | Line | Severity | Message |
+				// parts: [ "", " 12 ", " INFO ", " msg ", "" ]
+				if len(parts) >= 4 {
+					lineNum, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+					severity := strings.TrimSpace(parts[2]) // Badge might contain emoji
+					msg := strings.TrimSpace(parts[3])
+
+					// Clean severity (remove emoji and extra text)
+					if strings.Contains(severity, "WARNING") {
+						severity = "WARNING"
+					} else if strings.Contains(severity, "CRITICAL") {
+						severity = "CRITICAL"
+					} else {
+						severity = "INFO"
+					}
+
+					comments = append(comments, domain.ReviewComment{
+						File:     defaultFile,
+						Line:     lineNum,
+						Comment:  msg,
+						Severity: severity,
+					})
+				}
+			case "summary":
+				// | File | Line | Suggestion |
+				if len(parts) >= 4 {
+					// Use regex or simple parsing to extract file path from link if present
+					// Link format: [path](url) or just path
+					fileRaw := strings.TrimSpace(parts[1])
+					file := extractPathFromLink(fileRaw)
+
+					lineRaw := strings.TrimSpace(parts[2])
+					lineNum := extractLineFromLink(lineRaw)
+
+					msg := strings.TrimSpace(parts[3])
+
+					comments = append(comments, domain.ReviewComment{
+						File:    file,
+						Line:    lineNum,
+						Comment: msg,
+					})
+				}
+			}
+		} else if inTable && !strings.HasPrefix(line, "|") {
+			// End of table
+			inTable = false
+		}
+	}
+	return comments
+}
+
+func extractPathFromLink(text string) string {
+	// [path](url) -> path
+	if strings.HasPrefix(text, "[") {
+		if end := strings.Index(text, "]"); end != -1 {
+			return text[1:end]
+		}
+	}
+	return text
+}
+
+func extractLineFromLink(text string) int {
+	// [123](url) -> 123
+	if strings.HasPrefix(text, "[") {
+		if end := strings.Index(text, "]"); end != -1 {
+			val := text[1:end]
+			if i, err := strconv.Atoi(val); err == nil {
+				return i
+			}
+		}
+	}
+	// Just 123
+	if i, err := strconv.Atoi(text); err == nil {
+		return i
+	}
+	return 0
 }
 
 // hasExistingSummary checks if a summary comment exists for the commit

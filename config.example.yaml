@@ -39,6 +39,7 @@ mcp:
 
   bitbucket:
     endpoint: http://localhost:8082 # Bitbucket MCP server endpoint
+    web_url: "https://bitbucket.example.com" # Required for clickable links in comments
     auth_header: Bitbucket-Token    # Authorization header name
     allowed_tools:                  # Whitelist of allowed tools
       - capabilities

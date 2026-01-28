@@ -22,10 +22,17 @@ func (p *PRProcessor) postComments(ctx context.Context, pr *domain.PullRequest, 
 }
 
 func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullRequest, review *domain.ReviewResult, existingComments []domain.ReviewComment) error {
-	merger := NewCommentMerger(&p.cfg.Pipeline.CommentMerge)
+	merger := NewCommentMerger(&p.cfg.Pipeline.CommentMerge, p.cfg.MCP.Bitbucket.WebURL)
 	result := merger.Merge(review.Comments, pr.LatestCommit)
 
 	pullRequestId, _ := strconv.Atoi(pr.ID)
+
+	// Context for link generation
+	prCtx := map[string]interface{}{
+		"projectKey":    pr.ProjectKey,
+		"repoSlug":      pr.RepoSlug,
+		"pullRequestId": pullRequestId,
+	}
 
 	// 1. Post file-level comments
 	// Filter existing file comments
@@ -33,7 +40,7 @@ func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullReq
 
 	for _, fc := range toPostFiles {
 		fc.ModelName = review.Model
-		commentText := merger.FormatFileComment(&fc)
+		commentText := merger.FormatFileComment(&fc, prCtx)
 
 		args := map[string]interface{}{
 			"projectKey":    pr.ProjectKey,
@@ -71,7 +78,7 @@ func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullReq
 	// Check if summary for this commit already exists
 	if !p.hasExistingSummary(existingComments, pr.LatestCommit) {
 		summaryText := cleanSummaryMarkdown(review.Summary)
-		addonsText := merger.FormatSummaryAddons(result.SummaryAddons)
+		addonsText := merger.FormatSummaryAddons(result.SummaryAddons, prCtx)
 
 		fullSummary := fmt.Sprintf("**AI Review Summary (Model: %s)**\nScore: %d\n\n%s%s",
 			review.Model, review.Score, summaryText, addonsText)
@@ -155,23 +162,31 @@ func (p *PRProcessor) cleanupSession(prID string) error {
 	return nil
 }
 
-// cleanSummaryMarkdown removes header formatting from summary text to prevent huge fonts in Bitbucket
+// cleanSummaryMarkdown removes markdown formatting to produce plain text
 func cleanSummaryMarkdown(summary string) string {
 	lines := strings.Split(summary, "\n")
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
+
+		// Remove headers (start of line)
 		if strings.HasPrefix(trimmed, "#") {
-			// Remove all leading # characters
 			content := strings.TrimLeft(trimmed, "#")
-			// Trim leading spaces that might have been between # and text
-			content = strings.TrimSpace(content)
-			// Restore line with bold formatting instead of header
-			if content != "" {
-				lines[i] = "**" + content + "**"
-			} else {
-				lines[i] = ""
-			}
+			trimmed = strings.TrimSpace(content)
 		}
+
+		// Remove code blocks/ticks
+		trimmed = strings.ReplaceAll(trimmed, "```", "")
+		trimmed = strings.ReplaceAll(trimmed, "`", "")
+
+		// Remove bold markers
+		trimmed = strings.ReplaceAll(trimmed, "**", "")
+		trimmed = strings.ReplaceAll(trimmed, "__", "")
+
+		// Optional: Remove common list markers if needed,
+		// but preserve indentation/vibe for readability.
+		trimmed = strings.TrimPrefix(trimmed, "* ")
+
+		lines[i] = trimmed
 	}
 	return strings.Join(lines, "\n")
 }

@@ -25,6 +25,7 @@ type WebhookConfig struct {
 type MCPServerConfig struct {
 	Endpoint        string         `yaml:"endpoint"`
 	Token           string         `yaml:"-"`                // From Env
+	WebURL          string         `yaml:"web_url"`          // Web UI Base URL (e.g. https://bitbucket.example.com)
 	AuthHeader      string         `yaml:"auth_header"`      // Header name to use for token, e.g. "Bitbucket-Token"
 	AllowedTools    []string       `yaml:"allowed_tools"`    // Whitelist of tools to expose
 	ResponseFilters []FilterConfig `yaml:"response_filters"` // Output filters
@@ -239,6 +240,7 @@ func LoadConfig() *Config {
 	cfg.Server.WebhookSecret = getEnv("WEBHOOK_SECRET", cfg.Server.WebhookSecret)
 
 	cfg.MCP.Bitbucket.Token = getEnv("BITBUCKET_MCP_TOKEN", cfg.MCP.Bitbucket.Token)
+	cfg.MCP.Bitbucket.WebURL = getEnv("BITBUCKET_WEB_URL", cfg.MCP.Bitbucket.WebURL)
 	cfg.MCP.Jira.Token = getEnv("JIRA_MCP_TOKEN", cfg.MCP.Jira.Token)
 	cfg.MCP.Confluence.Token = getEnv("CONFLUENCE_MCP_TOKEN", cfg.MCP.Confluence.Token)
 

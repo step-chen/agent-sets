@@ -3,6 +3,7 @@ package processor
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"pr-review-automation/internal/config"
@@ -12,11 +13,12 @@ import (
 // CommentMerger handles comment grouping and merging
 type CommentMerger struct {
 	config *config.CommentMergeConfig
+	webURL string
 }
 
 // NewCommentMerger creates a new CommentMerger
-func NewCommentMerger(cfg *config.CommentMergeConfig) *CommentMerger {
-	return &CommentMerger{config: cfg}
+func NewCommentMerger(cfg *config.CommentMergeConfig, webURL string) *CommentMerger {
+	return &CommentMerger{config: cfg, webURL: webURL}
 }
 
 // MergeResult contains merged comments ready for posting
@@ -112,8 +114,28 @@ func (m *CommentMerger) isHighSeverity(severty string) bool {
 	return c.IsHighSeverity()
 }
 
+func (m *CommentMerger) getFileLink(filePath string, prCtx map[string]interface{}) string {
+	if m.webURL == "" || filePath == "" {
+		return filePath
+	}
+	// Format: {WebURL}/projects/{Project}/repos/{Repo}/pull-requests/{ID}/diff#{FilePath}
+	return fmt.Sprintf("[%s](%s/projects/%s/repos/%s/pull-requests/%d/diff#%s)",
+		filePath, m.webURL, prCtx["projectKey"], prCtx["repoSlug"], prCtx["pullRequestId"], filePath)
+}
+
+func (m *CommentMerger) getLineLink(filePath string, line int, prCtx map[string]interface{}) string {
+	if m.webURL == "" || line <= 0 {
+		return strconv.Itoa(line)
+	}
+	// Format: {WebURL}/projects/{Project}/repos/{Repo}/pull-requests/{ID}/diff#{FilePath}?t={Line}
+	// 't' param usually refers to 'to' side (added/modified lines) which is typical for PR comments
+	url := fmt.Sprintf("%s/projects/%s/repos/%s/pull-requests/%d/diff#%s?t=%d",
+		m.webURL, prCtx["projectKey"], prCtx["repoSlug"], prCtx["pullRequestId"], filePath, line)
+	return fmt.Sprintf("[%d](%s)", line, url)
+}
+
 // FormatFileComment generates Markdown for a file comment
-func (m *CommentMerger) FormatFileComment(fc *MergedFileComment) string {
+func (m *CommentMerger) FormatFileComment(fc *MergedFileComment, prCtx map[string]interface{}) string {
 	var sb strings.Builder
 	sb.WriteString(fc.Marker)
 	sb.WriteString("\n\n")
@@ -132,7 +154,8 @@ func (m *CommentMerger) FormatFileComment(fc *MergedFileComment) string {
 		icon = "🚫"
 	}
 
-	sb.WriteString(fmt.Sprintf("## %s %s Code Review\n\n", icon, fc.FilePath))
+	fileLink := m.getFileLink(fc.FilePath, prCtx)
+	sb.WriteString(fmt.Sprintf("## %s %s Code Review\n\n", icon, fileLink))
 	sb.WriteString("| Line | Severity | Message |\n")
 	sb.WriteString("|------|----------|----------|\n")
 
@@ -161,7 +184,7 @@ func (m *CommentMerger) FormatFileComment(fc *MergedFileComment) string {
 }
 
 // FormatSummaryAddons generates Markdown table for INFO/NIT comments
-func (m *CommentMerger) FormatSummaryAddons(comments []domain.ReviewComment) string {
+func (m *CommentMerger) FormatSummaryAddons(comments []domain.ReviewComment, prCtx map[string]interface{}) string {
 	if len(comments) == 0 {
 		return ""
 	}
@@ -182,7 +205,11 @@ func (m *CommentMerger) FormatSummaryAddons(comments []domain.ReviewComment) str
 	for _, c := range comments {
 		msg := strings.ReplaceAll(c.Comment, "|", "\\|")
 		msg = strings.ReplaceAll(msg, "\n", "<br>")
-		sb.WriteString(fmt.Sprintf("| %s | %d | %s |\n", c.File, c.Line, msg))
+
+		fileLink := m.getFileLink(c.File, prCtx)
+		lineLink := m.getLineLink(c.File, c.Line, prCtx)
+
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s |\n", fileLink, lineLink, msg))
 	}
 
 	return sb.String()

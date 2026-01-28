@@ -183,7 +183,10 @@ func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
 	if strings.Contains(postedSummary, "# Bad Header") {
 		t.Errorf("Summary should not contain headers. Got: %s", postedSummary)
 	}
-	if !strings.Contains(postedSummary, "**Bad Header**") {
-		t.Errorf("Summary should contain bolded text instead of header. Got: %s", postedSummary)
+	if strings.Contains(postedSummary, "**Bad Header**") {
+		t.Errorf("Summary should NOT contain bolded text. Got: %s", postedSummary)
+	}
+	if !strings.Contains(postedSummary, "Bad Header") {
+		t.Errorf("Summary should contain plain text. Got: %s", postedSummary)
 	}
 }
