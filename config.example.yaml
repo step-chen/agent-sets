@@ -14,7 +14,7 @@ log:
 
 server:
   port: 8080                    # Server listening port
-  concurrency_limit: 10         # Concurrency limit for requests
+  concurrency_limit: 10         # Max concurrent PRs (excess requests will be queued)
   read_timeout: 10s             # Timeout for reading request body
   write_timeout: 30s            # Timeout for writing response
   shutdown_timeout: 30s         # Timeout for graceful shutdown
@@ -24,7 +24,6 @@ llm:
   model: qwen3-coder            # LLM model name
   endpoint: http://localhost:8081/v1 # LLM API endpoint (OpenAI compatible)
   timeout: 120s                 # LLM request timeout
-  max_concurrency: 1            # Max concurrent LLM requests
 
 mcp:
   retry:
@@ -39,7 +38,6 @@ mcp:
 
   bitbucket:
     endpoint: http://localhost:8082 # Bitbucket MCP server endpoint
-    web_url: "https://bitbucket.example.com" # Required for clickable links in comments
     auth_header: Bitbucket-Token    # Authorization header name
     allowed_tools:                  # Whitelist of allowed tools
       - capabilities

@@ -100,79 +100,74 @@ func (h *BitbucketWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 
 	metrics.WebhookRequests.WithLabelValues("accepted").Inc()
 
-	// 3. Concurrency: Check capacity BEFORE creating goroutine to prevent goroutine leak
-	select {
-	case h.sem <- struct{}{}:
-		// Acquired semaphore, proceed with async processing
-		h.wg.Add(1)
-		go func() {
-			defer h.wg.Done()
-			defer func() { <-h.sem }()
+	// 3. Concurrency: Queue request by starting goroutine immediately
+	// The semaphore acquisition happens INSIDE the goroutine to implement "Queue & Wait"
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
 
-			// Panic recovery to prevent goroutine crash
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("Panic recovered in webhook handler",
-						"panic", r,
-						"stack", string(debug.Stack()))
-				}
-			}()
+		// Acquire semaphore (Blocking Wait)
+		// This effectively puts the job in a queue
+		h.sem <- struct{}{}
+		defer func() { <-h.sem }()
 
-			// Nil check for processor
-			if h.prProcessor == nil {
-				slog.Error("processor is nil")
-				return
-			}
-
-			// Use context with timeout - Increased to 15m to handle up to 10 tool calls + LLM latency
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-			defer cancel()
-
-			// Parse Payload using Robust Parser
-			pr, err := h.parser.Parse(ctx, body)
-			if err != nil {
-				slog.Error("payload parse failed",
-					"error", err,
-					"payload_preview", truncateForLog(body, 500),
-				)
-				metrics.PayloadParseFailures.WithLabelValues("both").Inc()
-				return
-			}
-
-			// Event Key Check
-			eventKey := gjson.GetBytes(body, "eventKey").String()
-			// Only process specific events
-			// pr:opened - New PR
-			// pr:from_ref_updated - Source branch updated (new commits)
-			if eventKey != "pr:opened" && eventKey != "pr:from_ref_updated" {
-				slog.Info("ignoring event", "event_key", eventKey, "pr_id", pr.ID)
-				metrics.WebhookRequests.WithLabelValues("ignored_event").Inc()
-				return
-			}
-
-			if !pr.IsValid() {
-				slog.Error("parsed pr invalid (missing key fields)", "pr", pr)
-				metrics.WebhookRequests.WithLabelValues("invalid_payload").Inc()
-				return
-			}
-
-			slog.Info("processing pr", "pr_id", pr.ID, "repo", pr.RepoSlug)
-
-			// Process the PR
-			if err := h.prProcessor.ProcessPullRequest(ctx, pr); err != nil {
-				slog.Error("process pr failed", "error", err, "pr_id", pr.ID)
+		// Panic recovery
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Panic recovered in webhook handler",
+					"panic", r,
+					"stack", string(debug.Stack()))
 			}
 		}()
 
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "Pull request queued for review")
+		// Nil check
+		if h.prProcessor == nil {
+			slog.Error("processor is nil")
+			return
+		}
 
-	default:
-		// At capacity, reject with 429 Too Many Requests
-		slog.Warn("concurrency limit, request dropped")
-		metrics.WebhookRequests.WithLabelValues("dropped_concurrency").Inc()
-		http.Error(w, "Server busy, please retry later", http.StatusTooManyRequests)
-	}
+		// Create context with timeout ONLY AFTER acquiring the semaphore
+		// This ensures timeout covers actual processing time, not queueing time
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+
+		// Parse Payload using Robust Parser
+		pr, err := h.parser.Parse(ctx, body)
+		if err != nil {
+			slog.Error("payload parse failed",
+				"error", err,
+				"payload_preview", truncateForLog(body, 500),
+			)
+			metrics.PayloadParseFailures.WithLabelValues("both").Inc()
+			return
+		}
+
+		// Event Key Check
+		eventKey := gjson.GetBytes(body, "eventKey").String()
+		// Only process specific events
+		if eventKey != "pr:opened" && eventKey != "pr:from_ref_updated" {
+			slog.Info("ignoring event", "event_key", eventKey, "pr_id", pr.ID)
+			metrics.WebhookRequests.WithLabelValues("ignored_event").Inc()
+			return
+		}
+
+		if !pr.IsValid() {
+			slog.Error("parsed pr invalid (missing key fields)", "pr", pr)
+			metrics.WebhookRequests.WithLabelValues("invalid_payload").Inc()
+			return
+		}
+
+		slog.Info("processing pr", "pr_id", pr.ID, "repo", pr.RepoSlug)
+
+		// Process the PR
+		if err := h.prProcessor.ProcessPullRequest(ctx, pr); err != nil {
+			slog.Error("process pr failed", "error", err, "pr_id", pr.ID)
+		}
+	}()
+
+	// Always return 200 OK immediately to Bitbucket
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintln(w, "Pull request queued for review")
 }
 
 // verifySignature validates the HMAC-SHA256 signature of a webhook request

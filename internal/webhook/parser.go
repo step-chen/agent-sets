@@ -113,10 +113,17 @@ func (p *PayloadParser) probePayload(body []byte) *domain.PullRequest {
 		return ""
 	}
 
-	// Paths for latestCommit (from source branch)
 	pathsLatestCommit := []string{
 		"pullRequest.fromRef.latestCommit",
 		"fromRef.latestCommit",
+	}
+
+	// Paths for WebURL
+	pathsWebURL := []string{
+		"pullRequest.links.self.0.href", // Bitbucket Server
+		"pullRequest.links.html.href",   // Bitbucket Cloud
+		"links.self.0.href",
+		"links.html.href",
 	}
 
 	return &domain.PullRequest{
@@ -127,6 +134,7 @@ func (p *PayloadParser) probePayload(body []byte) *domain.PullRequest {
 		Description:  probeString(pathsDesc),
 		Author:       probeString(pathsAuthor),
 		LatestCommit: probeString(pathsLatestCommit),
+		WebURL:       probeString(pathsWebURL),
 	}
 }
 
@@ -146,7 +154,7 @@ func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*doma
 	sysPrompt, err := p.promptLoader.LoadPrompt("system/pr_webhook_parser", nil)
 	if err != nil {
 		// Fallback prompt if loader fails
-		sysPrompt = "You are a JSON parser. Extract id, projectKey, repoSlug, title, description, authorName as JSON."
+		sysPrompt = "You are a JSON parser. Extract id, projectKey, repoSlug, title, description, authorName, webUrl as JSON."
 		slog.Warn("load prompt failed, using fallback", "error", err)
 	}
 

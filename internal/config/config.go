@@ -25,7 +25,6 @@ type WebhookConfig struct {
 type MCPServerConfig struct {
 	Endpoint        string         `yaml:"endpoint"`
 	Token           string         `yaml:"-"`                // From Env
-	WebURL          string         `yaml:"web_url"`          // Web UI Base URL (e.g. https://bitbucket.example.com)
 	AuthHeader      string         `yaml:"auth_header"`      // Header name to use for token, e.g. "Bitbucket-Token"
 	AllowedTools    []string       `yaml:"allowed_tools"`    // Whitelist of tools to expose
 	ResponseFilters []FilterConfig `yaml:"response_filters"` // Output filters
@@ -66,11 +65,10 @@ type Config struct {
 	} `yaml:"server"`
 
 	LLM struct {
-		Model          string        `yaml:"model"`
-		Endpoint       string        `yaml:"endpoint"`
-		APIKey         string        `yaml:"api_key"` // From YAML or Env
-		Timeout        time.Duration `yaml:"timeout"`
-		MaxConcurrency int           `yaml:"max_concurrency"`
+		Model    string        `yaml:"model"`
+		Endpoint string        `yaml:"endpoint"`
+		APIKey   string        `yaml:"api_key"` // From YAML or Env
+		Timeout  time.Duration `yaml:"timeout"`
 	} `yaml:"llm"`
 
 	MCP struct {
@@ -178,7 +176,6 @@ func LoadConfig() *Config {
 	cfg.LLM.Endpoint = "https://api.openai.com/v1"
 	cfg.LLM.Model = "gpt-4o"
 	cfg.LLM.Timeout = 120 * time.Second
-	cfg.LLM.MaxConcurrency = 1
 	cfg.MCP.Timeout = 30 * time.Second
 	cfg.MCP.Retry.Attempts = 3
 	cfg.MCP.Retry.Backoff = 1 * time.Second
@@ -238,7 +235,6 @@ func LoadConfig() *Config {
 	cfg.Server.WebhookSecret = getEnv("WEBHOOK_SECRET", cfg.Server.WebhookSecret)
 
 	cfg.MCP.Bitbucket.Token = getEnv("BITBUCKET_MCP_TOKEN", cfg.MCP.Bitbucket.Token)
-	cfg.MCP.Bitbucket.WebURL = getEnv("BITBUCKET_WEB_URL", cfg.MCP.Bitbucket.WebURL)
 	cfg.MCP.Jira.Token = getEnv("JIRA_MCP_TOKEN", cfg.MCP.Jira.Token)
 	cfg.MCP.Confluence.Token = getEnv("CONFLUENCE_MCP_TOKEN", cfg.MCP.Confluence.Token)
 

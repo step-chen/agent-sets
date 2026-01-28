@@ -12,13 +12,13 @@ import (
 
 // CommentMerger handles comment grouping and merging
 type CommentMerger struct {
-	config *config.CommentMergeConfig
-	webURL string
+	config   *config.CommentMergeConfig
+	prWebURL string
 }
 
 // NewCommentMerger creates a new CommentMerger
-func NewCommentMerger(cfg *config.CommentMergeConfig, webURL string) *CommentMerger {
-	return &CommentMerger{config: cfg, webURL: webURL}
+func NewCommentMerger(cfg *config.CommentMergeConfig, prWebURL string) *CommentMerger {
+	return &CommentMerger{config: cfg, prWebURL: prWebURL}
 }
 
 // MergeResult contains merged comments ready for posting
@@ -114,28 +114,25 @@ func (m *CommentMerger) isHighSeverity(severty string) bool {
 	return c.IsHighSeverity()
 }
 
-func (m *CommentMerger) getFileLink(filePath string, prCtx map[string]interface{}) string {
-	if m.webURL == "" || filePath == "" {
+func (m *CommentMerger) getFileLink(filePath string) string {
+	if m.prWebURL == "" || filePath == "" {
 		return filePath
 	}
-	// Format: {WebURL}/projects/{Project}/repos/{Repo}/pull-requests/{ID}/diff#{FilePath}
-	return fmt.Sprintf("[%s](%s/projects/%s/repos/%s/pull-requests/%d/diff#%s)",
-		filePath, m.webURL, prCtx["projectKey"], prCtx["repoSlug"], prCtx["pullRequestId"], filePath)
+	// Format: {PR_WEB_URL}/diff#{FilePath}
+	return fmt.Sprintf("[%s](%s/diff#%s)", filePath, m.prWebURL, filePath)
 }
 
-func (m *CommentMerger) getLineLink(filePath string, line int, prCtx map[string]interface{}) string {
-	if m.webURL == "" || line <= 0 {
+func (m *CommentMerger) getLineLink(filePath string, line int) string {
+	if m.prWebURL == "" || line <= 0 {
 		return strconv.Itoa(line)
 	}
-	// Format: {WebURL}/projects/{Project}/repos/{Repo}/pull-requests/{ID}/diff#{FilePath}?t={Line}
-	// 't' param usually refers to 'to' side (added/modified lines) which is typical for PR comments
-	url := fmt.Sprintf("%s/projects/%s/repos/%s/pull-requests/%d/diff#%s?t=%d",
-		m.webURL, prCtx["projectKey"], prCtx["repoSlug"], prCtx["pullRequestId"], filePath, line)
+	// Format: {PR_WEB_URL}/diff#{FilePath}?t={Line}
+	url := fmt.Sprintf("%s/diff#%s?t=%d", m.prWebURL, filePath, line)
 	return fmt.Sprintf("[%d](%s)", line, url)
 }
 
 // FormatFileComment generates Markdown for a file comment
-func (m *CommentMerger) FormatFileComment(fc *MergedFileComment, prCtx map[string]interface{}) string {
+func (m *CommentMerger) FormatFileComment(fc *MergedFileComment) string {
 	var sb strings.Builder
 	sb.WriteString(fc.Marker)
 	sb.WriteString("\n\n")
@@ -154,7 +151,7 @@ func (m *CommentMerger) FormatFileComment(fc *MergedFileComment, prCtx map[strin
 		icon = "🚫"
 	}
 
-	fileLink := m.getFileLink(fc.FilePath, prCtx)
+	fileLink := m.getFileLink(fc.FilePath)
 	sb.WriteString(fmt.Sprintf("## %s %s Code Review\n\n", icon, fileLink))
 	sb.WriteString("| Line | Severity | Message |\n")
 	sb.WriteString("|------|----------|----------|\n")
@@ -184,7 +181,7 @@ func (m *CommentMerger) FormatFileComment(fc *MergedFileComment, prCtx map[strin
 }
 
 // FormatSummaryAddons generates Markdown table for INFO/NIT comments
-func (m *CommentMerger) FormatSummaryAddons(comments []domain.ReviewComment, prCtx map[string]interface{}) string {
+func (m *CommentMerger) FormatSummaryAddons(comments []domain.ReviewComment) string {
 	if len(comments) == 0 {
 		return ""
 	}
@@ -206,8 +203,8 @@ func (m *CommentMerger) FormatSummaryAddons(comments []domain.ReviewComment, prC
 		msg := strings.ReplaceAll(c.Comment, "|", "\\|")
 		msg = strings.ReplaceAll(msg, "\n", "<br>")
 
-		fileLink := m.getFileLink(c.File, prCtx)
-		lineLink := m.getLineLink(c.File, c.Line, prCtx)
+		fileLink := m.getFileLink(c.File)
+		lineLink := m.getLineLink(c.File, c.Line)
 
 		sb.WriteString(fmt.Sprintf("| %s | %s | %s |\n", fileLink, lineLink, msg))
 	}

@@ -7,10 +7,13 @@ Return the result as a strict, valid JSON object. Do not include markdown format
 
 1.  **id**: (string) The Pull Request ID.
 2.  **projectKey**: (string) The Project Key (e.g., "CVTOO", "PROJ"). Look for fields like `project.key`.
-3.  **repoSlug**: (string) The Repository Slug or Name (e.g., "fastmap2dh"). Look for fields like `repository.slug`, `repository.name`.
-4.  **title**: (string) The PR title.
-5.  **description**: (string) The PR description.
-6.  **authorName**: (string) The display name or username of the PR author.
+3.  **repoSlug**: (string) The repository slug (e.g. from repository.slug)
+4.  **title**: (string) The pull request title
+5.  **description**: (string) The pull request description
+6.  **authorName**: (string) The display name of the PR author
+7.  **webUrl**: (string) The full URL to the pull request in the web interface (check links.self.0.href or links.html.href)
+
+Result must be valid JSON only.
 
 ### Extraction Rules
 

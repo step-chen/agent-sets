@@ -22,17 +22,10 @@ func (p *PRProcessor) postComments(ctx context.Context, pr *domain.PullRequest, 
 }
 
 func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullRequest, review *domain.ReviewResult, existingComments []domain.ReviewComment) error {
-	merger := NewCommentMerger(&p.cfg.Pipeline.CommentMerge, p.cfg.MCP.Bitbucket.WebURL)
+	merger := NewCommentMerger(&p.cfg.Pipeline.CommentMerge, pr.WebURL)
 	result := merger.Merge(review.Comments, pr.LatestCommit)
 
 	pullRequestId, _ := strconv.Atoi(pr.ID)
-
-	// Context for link generation
-	prCtx := map[string]interface{}{
-		"projectKey":    pr.ProjectKey,
-		"repoSlug":      pr.RepoSlug,
-		"pullRequestId": pullRequestId,
-	}
 
 	// 1. Post file-level comments
 	// Filter existing file comments
@@ -40,7 +33,7 @@ func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullReq
 
 	for _, fc := range toPostFiles {
 		fc.ModelName = review.Model
-		commentText := merger.FormatFileComment(&fc, prCtx)
+		commentText := merger.FormatFileComment(&fc)
 
 		args := map[string]interface{}{
 			"projectKey":    pr.ProjectKey,
@@ -78,7 +71,7 @@ func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullReq
 	// Check if summary for this commit already exists
 	if !p.hasExistingSummary(existingComments, pr.LatestCommit) {
 		summaryText := cleanSummaryMarkdown(review.Summary)
-		addonsText := merger.FormatSummaryAddons(result.SummaryAddons, prCtx)
+		addonsText := merger.FormatSummaryAddons(result.SummaryAddons)
 
 		fullSummary := fmt.Sprintf("**AI Review Summary (Model: %s)**\nScore: %d\n\n%s%s",
 			review.Model, review.Score, summaryText, addonsText)

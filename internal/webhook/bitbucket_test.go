@@ -114,7 +114,8 @@ func TestBitbucketWebhookHandler_InvalidJSON(t *testing.T) {
 
 	handler.ServeHTTP(w, req)
 
-	// Note: Invalid JSON is now caught in ServeHTTP (it unmarshals to map[string]interface{} check? No, handler checks utf8 then async parses)
+	// Verify extraction (simplified since we mock dependencies)
+	// In a real test, we would verify if the aggregator was called with the right data
 	// Actually, wait. The new ServeHTTP logic REMOVED the synchronous Unmarshal check.
 	// It only checks UTF8.
 	// So "not valid json" (if utf8) will be accepted (200 OK) and fail asynchronously.

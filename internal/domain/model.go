@@ -15,6 +15,7 @@ type PullRequest struct {
 	Description  string
 	Author       string
 	LatestCommit string // Latest commit SHA for tracking reviewed versions
+	WebURL       string // Full URL to the pull request in the web interface
 	// SourceBranch and TargetBranch can be added here if needed in the future
 }
 
