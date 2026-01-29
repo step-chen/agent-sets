@@ -11,39 +11,65 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
-	"sync"
+	"sync" // Standard sync
 	"time"
 	"unicode/utf8"
 
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/processor"
+	internal_sync "pr-review-automation/internal/sync" // Custom sync package
 
 	"github.com/tidwall/gjson"
 )
 
 // BitbucketWebhookHandler handles incoming Bitbucket webhook events
 type BitbucketWebhookHandler struct {
-	prProcessor processor.Processor
-	config      *config.Config
-	parser      *PayloadParser
-	sem         chan struct{} // Semaphore to limit concurrent processing
-	wg          sync.WaitGroup
+	prProcessor    processor.Processor
+	config         *config.Config
+	parser         *PayloadParser
+	workerPool     *WorkerPool
+	debouncer      *internal_sync.Debouncer
+	keyLock        *internal_sync.KeyLock
+	latestPayloads sync.Map // Map[string][]byte: PR-ID -> Latest Payload
 }
 
 // NewBitbucketWebhookHandler creates a new webhook handler
 func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Processor, parser *PayloadParser) *BitbucketWebhookHandler {
+	// Initialize Worker Pool
+	queueSize := cfg.Server.QueueSize
+	if queueSize <= 0 {
+		queueSize = 100 // Safe default
+	}
+	workerCount := int(cfg.Server.ConcurrencyLimit)
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+
+	wp := NewWorkerPool(workerCount, queueSize)
+	wp.Start()
+
+	// Initialize Debouncer
+	debounceWindow := cfg.Server.DebounceWindow
+	if debounceWindow <= 0 {
+		debounceWindow = 2 * time.Second
+	}
+	debouncer := internal_sync.NewDebouncer(debounceWindow)
+	keyLock := internal_sync.NewKeyLock()
+
 	return &BitbucketWebhookHandler{
 		prProcessor: prProcessor,
 		config:      cfg,
 		parser:      parser,
-		sem:         make(chan struct{}, cfg.Server.ConcurrencyLimit),
+		workerPool:  wp,
+		debouncer:   debouncer,
+		keyLock:     keyLock,
 	}
 }
 
 // WaitForCompletion blocks until all background PR processing tasks complete
 func (h *BitbucketWebhookHandler) WaitForCompletion() {
-	h.wg.Wait()
+	h.workerPool.Stop()
 }
 
 // ServeHTTP handles incoming webhook requests
@@ -92,82 +118,122 @@ func (h *BitbucketWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Note: We delay parsing to the async goroutine to return 200 OK quickly.
-	// However, we could do a quick L1 probe here?
-	// The requirement implies asynchronous processing.
-	// But validation failure should ideally be user-visible?
-	// Given the instructions ("async scenario... cannot return 500"), we stick to full async.
-
 	metrics.WebhookRequests.WithLabelValues("accepted").Inc()
 
-	// 3. Concurrency: Queue request by starting goroutine immediately
-	// The semaphore acquisition happens INSIDE the goroutine to implement "Queue & Wait"
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
+	// 3. Extract PR ID for Debouncing/Queueing
+	// We do a quick parse or GJSON lookup to get the ID/EventKey without full parsing
+	eventKey := gjson.GetBytes(body, "eventKey").String()
+	// Only process specific events
+	if eventKey != "pr:opened" && eventKey != "pr:from_ref_updated" {
+		slog.Debug("ignoring event type for processing", "event_key", eventKey)
+		// We still return 200 as we accepted the hook
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "Event ignored")
+		metrics.WebhookRequests.WithLabelValues("ignored_event").Inc()
+		return
+	}
 
-		// Acquire semaphore (Blocking Wait)
-		// This effectively puts the job in a queue
-		h.sem <- struct{}{}
-		defer func() { <-h.sem }()
+	// Extract project/repo/id to form a unique key
+	// Structure varies, but usually `pullRequest.id`
+	// Extract project/repo/id to form a unique key
+	// Structure varies, but usually `pullRequest.id`
+	prID := gjson.GetBytes(body, "pullRequest.id").String()
+	projectKey := gjson.GetBytes(body, "pullRequest.fromRef.repository.project.key").String()
+	repoSlug := gjson.GetBytes(body, "pullRequest.fromRef.repository.slug").String()
 
-		// Panic recovery
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("Panic recovered in webhook handler",
-					"panic", r,
-					"stack", string(debug.Stack()))
-			}
-		}()
+	var uniqueKey string
+	if prID != "" && projectKey != "" && repoSlug != "" {
+		uniqueKey = fmt.Sprintf("%s/%s/%s", projectKey, repoSlug, prID)
+	} else {
+		// Fallback for L2/Unknown structures: Use ephemeral key
+		// We can't debounce effectively but we preserve L2 fallback capability
+		slog.Warn("could not extract pr identity, processing without specific lock", "pr_id", prID)
+		uniqueKey = fmt.Sprintf("unknown-%d", time.Now().UnixNano())
+	}
 
-		// Nil check
-		if h.prProcessor == nil {
-			slog.Error("processor is nil")
-			return
-		}
+	// 4. Update the latest payload for this PR
+	h.latestPayloads.Store(uniqueKey, body)
 
-		// Create context with timeout ONLY AFTER acquiring the semaphore
-		// This ensures timeout covers actual processing time, not queueing time
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-		defer cancel()
-
-		// Parse Payload using Robust Parser
-		pr, err := h.parser.Parse(ctx, body)
-		if err != nil {
-			slog.Error("payload parse failed",
-				"error", err,
-				"payload_preview", truncateForLog(body, 500),
-			)
-			metrics.PayloadParseFailures.WithLabelValues("both").Inc()
-			return
-		}
-
-		// Event Key Check
-		eventKey := gjson.GetBytes(body, "eventKey").String()
-		// Only process specific events
-		if eventKey != "pr:opened" && eventKey != "pr:from_ref_updated" {
-			slog.Info("ignoring event", "event_key", eventKey, "pr_id", pr.ID)
-			metrics.WebhookRequests.WithLabelValues("ignored_event").Inc()
-			return
-		}
-
-		if !pr.IsValid() {
-			slog.Error("parsed pr invalid (missing key fields)", "pr", pr)
-			metrics.WebhookRequests.WithLabelValues("invalid_payload").Inc()
-			return
-		}
-
-		slog.Info("processing pr", "pr_id", pr.ID, "repo", pr.RepoSlug)
-
-		// Process the PR
-		if err := h.prProcessor.ProcessPullRequest(ctx, pr); err != nil {
-			slog.Error("process pr failed", "error", err, "pr_id", pr.ID)
-		}
-	}()
+	// 5. Schedule via Debouncer
+	h.debouncer.Add(uniqueKey, func() {
+		h.submitJob(uniqueKey)
+	})
 
 	// Always return 200 OK immediately to Bitbucket
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "Pull request queued for review")
+}
+
+func (h *BitbucketWebhookHandler) submitJob(uniqueKey string) {
+	// 1. Retrieve Payload
+	val, ok := h.latestPayloads.Load(uniqueKey) // Don't Delete yet, wait until processed? No, Load is fine.
+	// Actually LoadAndDelete might be safer to ensure we process exactly what we have?
+	// But if a new one comes in *while* we are submitting?
+	// Let's LoadAndDelete. If a new one comes, it re-adds to map and schedules debouncer.
+	// Wait, Check Debouncer logic:
+	// If Add is called, it cancels previous timer.
+	// But here the timer has fired.
+	// So we LoadAndDelete.
+	val, ok = h.latestPayloads.LoadAndDelete(uniqueKey)
+	if !ok {
+		return
+	}
+	payload := val.([]byte)
+
+	// 2. Submit to WorkerPool
+	err := h.workerPool.Submit(func(ctx context.Context) error {
+		// Acquire PR-level Lock to ensure serial processing for this PR
+		// This protects against multiple workers picking up different debounced events for same PR (rare but possible)
+		h.keyLock.Lock(uniqueKey)
+		defer h.keyLock.Unlock(uniqueKey)
+
+		// Panic recovery for safety
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Panic recovered in pr worker", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+
+		// Full Parse inside worker
+		// Calculate timeout for actual processing
+		procCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+		defer cancel()
+
+		pr, err := h.parser.Parse(procCtx, payload)
+		if err != nil {
+			slog.Error("payload parse failed", "error", err)
+			metrics.PayloadParseFailures.WithLabelValues("both").Inc()
+			return err
+		}
+
+		if !pr.IsValid() {
+			slog.Error("parsed pr invalid", "pr", pr)
+			metrics.WebhookRequests.WithLabelValues("invalid_payload").Inc()
+			return fmt.Errorf("invalid pr")
+		}
+
+		slog.Info("processing pr", "pr_id", pr.ID, "repo", pr.RepoSlug)
+		if err := h.prProcessor.ProcessPullRequest(procCtx, pr); err != nil {
+			slog.Error("process pr failed", "error", err, "pr_id", pr.ID)
+			return err
+		}
+		return nil
+	})
+
+	if err != nil {
+		if err == ErrQueueFull {
+			slog.Warn("worker pool queue full, dropping request", "pr", uniqueKey)
+			metrics.WebhookRequests.WithLabelValues("dropped_full").Inc()
+			// We can't return 429 here because this is async.
+			// Ideally we would return 429 in ServeHTTP if we checked queue size there.
+			// Implementing "Fail Fast" in ServeHTTP:
+			// len(p.Queue) == cap(p.Queue) -> return 429.
+			// But since we debounce, we might not know if queue is full until later.
+			// However, dropping here is the fallback safety.
+		} else {
+			slog.Error("submit job failed", "error", err)
+		}
+	}
 }
 
 // verifySignature validates the HMAC-SHA256 signature of a webhook request

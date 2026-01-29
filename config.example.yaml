@@ -15,6 +15,8 @@ log:
 server:
   port: 8080                    # Server listening port
   concurrency_limit: 10         # Max concurrent PRs (excess requests will be queued)
+  queue_size: 100               # Max number of queued PRs
+  debounce_window: 10s           # Debounce window for PR events
   read_timeout: 10s             # Timeout for reading request body
   write_timeout: 30s            # Timeout for writing response
   shutdown_timeout: 30s         # Timeout for graceful shutdown

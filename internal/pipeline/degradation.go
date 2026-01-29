@@ -73,7 +73,19 @@ func (dm *DegradationManager) ApplyStrategy(
 
 	// Case 0: Within safe limits
 	if totalTokens <= threshold80 {
-		return reviewFunc(ctx, req, changes, contextFiles)
+		result, err := reviewFunc(ctx, req, changes, contextFiles)
+		if err == nil {
+			return result, nil
+		}
+
+		// [Smart Retry]: If timeout occurs (DeadlineExceeded) and we have not already degraded to L3,
+		// and the parent context is NOT dead, try L3 degradation.
+		if isTimeoutError(err) && ctx.Err() == nil {
+			slog.Warn("Standard review timed out, attempting smart retry with L3 (Diff Only)")
+			// Fallthrough to L3 logic
+		} else {
+			return nil, err
+		}
 	}
 
 	// Case 1: L1 - Truncate Context (if <= 100% or just over 80%)
@@ -152,4 +164,12 @@ func (dm *DegradationManager) applyL1Truncation(contextFiles []FileContent) []Fi
 		}
 	}
 	return reduced
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check for context.DeadlineExceeded wrapped in any way
+	return strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "timeout")
 }

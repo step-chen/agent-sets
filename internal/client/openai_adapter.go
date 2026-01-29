@@ -76,7 +76,7 @@ func (a *OpenAIAdapter) GetConfig() (endpoint, apiKey string) {
 
 // Ping sends a minimal request to verify connection
 func (a *OpenAIAdapter) Ping(ctx context.Context) error {
-	slog.Info("checking llm connection...")
+	slog.Debug("checking llm connection...")
 	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(a.model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
@@ -94,13 +94,6 @@ func (a *OpenAIAdapter) Ping(ctx context.Context) error {
 
 // Chat sends a chat completion request
 func (a *OpenAIAdapter) Chat(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
-	// Apply configured timeout if valid
-	if a.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, a.timeout)
-		defer cancel()
-	}
-
 	if a.sem != nil {
 		select {
 		case a.sem <- struct{}{}:
@@ -108,6 +101,13 @@ func (a *OpenAIAdapter) Chat(ctx context.Context, params openai.ChatCompletionNe
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+
+	// Apply configured timeout ONLY for the request execution, NOT for waiting in queue
+	if a.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, a.timeout)
+		defer cancel()
 	}
 
 	// Use default model if not provided

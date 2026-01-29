@@ -72,10 +72,14 @@ func TestBitbucketWebhookHandler_MethodNotAllowed(t *testing.T) {
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
 			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
+			QueueSize        int           `yaml:"queue_size"`
+			DebounceWindow   time.Duration `yaml:"debounce_window"`
 			WebhookSecret    string        `yaml:"-"`
 		}{
 			MaxBodySize:      2 * 1024 * 1024,
 			ConcurrencyLimit: 10,
+			QueueSize:        100,
+			DebounceWindow:   10 * time.Millisecond,
 		},
 	}
 	parser := createTestParser(t, &MockLLM{})
@@ -100,10 +104,14 @@ func TestBitbucketWebhookHandler_InvalidJSON(t *testing.T) {
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
 			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
+			QueueSize        int           `yaml:"queue_size"`
+			DebounceWindow   time.Duration `yaml:"debounce_window"`
 			WebhookSecret    string        `yaml:"-"`
 		}{
 			MaxBodySize:      2 * 1024 * 1024,
 			ConcurrencyLimit: 10,
+			QueueSize:        100,
+			DebounceWindow:   10 * time.Millisecond,
 		},
 	}
 	parser := createTestParser(t, &MockLLM{})
@@ -136,10 +144,14 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L1(t *testing.T) {
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
 			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
+			QueueSize        int           `yaml:"queue_size"`
+			DebounceWindow   time.Duration `yaml:"debounce_window"`
 			WebhookSecret    string        `yaml:"-"`
 		}{
 			MaxBodySize:      2 * 1024 * 1024,
 			ConcurrencyLimit: 10,
+			QueueSize:        100,
+			DebounceWindow:   10 * time.Millisecond,
 		},
 	}
 
@@ -204,10 +216,14 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L2(t *testing.T) {
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
 			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
+			QueueSize        int           `yaml:"queue_size"`
+			DebounceWindow   time.Duration `yaml:"debounce_window"`
 			WebhookSecret    string        `yaml:"-"`
 		}{
 			MaxBodySize:      2 * 1024 * 1024,
 			ConcurrencyLimit: 10,
+			QueueSize:        100,
+			DebounceWindow:   10 * time.Millisecond,
 		},
 	}
 
@@ -277,10 +293,14 @@ func TestBitbucketWebhookHandler_BodySizeLimit(t *testing.T) {
 			WriteTimeout     time.Duration `yaml:"write_timeout"`
 			ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 			MaxBodySize      int64         `yaml:"max_body_size"`
+			QueueSize        int           `yaml:"queue_size"`
+			DebounceWindow   time.Duration `yaml:"debounce_window"`
 			WebhookSecret    string        `yaml:"-"`
 		}{
 			MaxBodySize:      10, // Very small limit
 			ConcurrencyLimit: 10,
+			QueueSize:        100,
+			DebounceWindow:   10 * time.Millisecond,
 		},
 	}
 	parser := createTestParser(t, &MockLLM{})

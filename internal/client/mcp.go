@@ -193,6 +193,13 @@ func (c *MCPClient) reconnect(name string, logger *slog.Logger) (*mcp.ClientSess
 	logger.Info("connecting")
 
 	c.mu.Lock()
+	if oldT, ok := c.transports[name]; ok {
+		if closer, ok := oldT.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				logger.Warn("close old transport failed", "error", err)
+			}
+		}
+	}
 	delete(c.transports, name)
 	delete(c.sessions, name)
 	c.mu.Unlock()

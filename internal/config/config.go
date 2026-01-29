@@ -61,6 +61,8 @@ type Config struct {
 		WriteTimeout     time.Duration `yaml:"write_timeout"`
 		ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 		MaxBodySize      int64         `yaml:"max_body_size"`
+		QueueSize        int           `yaml:"queue_size"`
+		DebounceWindow   time.Duration `yaml:"debounce_window"`
 		WebhookSecret    string        `yaml:"-"` // From Env
 	} `yaml:"server"`
 
@@ -169,6 +171,8 @@ func LoadConfig() *Config {
 	cfg.Log.Output = "stdout"
 	cfg.Server.Port = 8080
 	cfg.Server.ConcurrencyLimit = 10
+	cfg.Server.QueueSize = 100 // Default Queue Size
+	cfg.Server.DebounceWindow = 2 * time.Second
 	cfg.Server.ReadTimeout = 10 * time.Second
 	cfg.Server.WriteTimeout = 30 * time.Second
 	cfg.Server.ShutdownTimeout = 30 * time.Second

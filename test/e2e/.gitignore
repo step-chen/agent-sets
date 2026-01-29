@@ -1,0 +1,9 @@
+# E2E test local files
+.env
+config.test.yaml
+data/
+logs/
+
+# E2E request payloads are environment-specific and should not be shared
+requests/*
+!requests/.gitkeep
