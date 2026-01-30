@@ -368,6 +368,68 @@ For detailed production deployment instructions (including Webhook configuration
 
 ---
 
+## Importance of Prompts and Design Guidelines
+
+In LLM-based agentic systems, the design of prompts directly determines the system's stability, efficiency, and feedback quality.
+
+### 1. Why Prompts are Critical?
+
+- **Preventing Logical Infinite Loops**: If a prompt doesn't clearly specify conditions for when an agent should stop or report an error, it might fall into an "info fetch failure -> retry tool call -> failure" infinite loop. This leads to resource wastage and request timeouts.
+- **Avoiding Infinite Thinking in Reasoning LLMs**: For "thinking" models with strong reasoning capabilities (e.g., o1, Gemini Thinking), ambiguous or contradictory instructions can cause the model to iterate endlessly within its Chain of Thought (CoT) without reaching a conclusion, leading to massive reasoning overhead and latency.
+- **Ensuring Parsing Success**: This system relies on structured JSON output for interacting with Bitbucket. If prompts fail to strictly enforce the output format (e.g., requesting raw JSON without Markdown wrappers) or lack clear field definitions, it can cause backend parsing errors or even post-incorrect review comments.
+- **Improving Review Precision**: Vague instructions can lead to LLM hallucinations, reporting code issues that don't exist. Clear review criteria and contextual guidance significantly reduce noise.
+
+### 2. Best Practices for Prompt Design
+
+- **Define Clear Output Schema**: Always mandate the LLM to return data in a specific format (e.g., JSON) and provide a schema template.
+- **Handle Boundary Conditions**: Explicitly instruct the agent on degradation strategies (e.g., ignoring a file or noting it in the summary) when a tool call returns empty data or an error.
+- **Scope Restriction**: Limit the agent's action range to prevent unintended tool executions.
+
+---
+
+## Local LLM Configuration Recommendations
+
+The system supports connecting to local LLMs (e.g., via Ollama, vLLM) through an OpenAI-compatible interface. For optimal code review results, please consider the following configuration recommendations:
+
+### 1. Model Selection
+
+- **Recommended Models**: Use models specifically fine-tuned for code with a moderate parameter size, such as:
+  - **Qwen 3 Coder** (30B)
+  - **GLM 4.7** (23B / 30B)
+- **Avoid**: Generic chat models may underperform in code understanding and strict JSON format adherence.
+
+### 2. Configuration Parameters
+
+Adjust the following settings in `config.yaml`:
+
+- **`llm.timeout`**: **120s+**. Code review involves processing large contexts. Local inference can be slower, so ensure a generous timeout.
+- **`pipeline.stage3_review.max_context_tokens`**: **32k+**. Depends on your VRAM. A larger context window allows the agent to read more code files at once, reducing fragmentation.
+- **`pipeline.stage3_review.temperature`**: **0.1 - 0.3**. Lower temperature helps generate more stable and deterministic JSON output.
+
+### 3. Recommended Inference Server Configuration (llama.cpp)
+
+For optimal performance with large contexts (100k+ tokens) on consumer hardware (e.g., dual RTX 2080Ti), use the following `llama-server` configuration:
+
+```bash
+llama-server \
+  --model path/to/model.gguf \
+  --port 8080 \
+  --split-mode layer \
+  --flash-attn on             # [Critical] Reduces VRAM usage and speeds up inference
+  --ctx-size 102400           # 100k context window
+  --batch-size 512            # Throughput balance
+  --ubatch-size 256           # Prevents VRAM spikes
+  --cache-type-k q4_0         # 4-bit KV cache quantization
+  --cache-type-v q4_0         # 4-bit KV cache quantization
+  --no-mmap                   # Force load into VRAM
+  --mlock                     # Prevent swapping
+  --cache-reuse 256           # Allow cache reuse for faster prompt processing
+  --temp 0.1                  # Low temperature for deterministic output
+  --seed 42                   # Fixed seed for reproducibility
+```
+
+---
+
 ## Extending the System
 
 The modular architecture makes the system easy to extend:
