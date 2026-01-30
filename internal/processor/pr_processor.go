@@ -112,7 +112,7 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 
 	slog.Info("posting comments", "count", len(review.Comments))
 
-	return p.postComments(ctx, pr, review, existingComments)
+	return p.postComments(ctx, pr, review, existingComments, commentValidator)
 }
 
 // fetchDiff retrieves the PR diff from Bitbucket for comment validation

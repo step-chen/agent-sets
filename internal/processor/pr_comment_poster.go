@@ -10,18 +10,19 @@ import (
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
+	"pr-review-automation/internal/validator"
 
 	"golang.org/x/sync/errgroup"
 )
 
-func (p *PRProcessor) postComments(ctx context.Context, pr *domain.PullRequest, review *domain.ReviewResult, existingComments []domain.ReviewComment) error {
+func (p *PRProcessor) postComments(ctx context.Context, pr *domain.PullRequest, review *domain.ReviewResult, existingComments []domain.ReviewComment, validator *validator.CommentValidator) error {
 	if p.cfg.Pipeline.CommentMerge.Enabled {
-		return p.postMergedComments(ctx, pr, review, existingComments)
+		return p.postMergedComments(ctx, pr, review, existingComments, validator)
 	}
-	return p.postIndividualComments(ctx, pr, review.Comments)
+	return p.postIndividualComments(ctx, pr, review.Comments, validator)
 }
 
-func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullRequest, review *domain.ReviewResult, existingComments []domain.ReviewComment) error {
+func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullRequest, review *domain.ReviewResult, existingComments []domain.ReviewComment, validator *validator.CommentValidator) error {
 	merger := NewCommentMerger(&p.cfg.Pipeline.CommentMerge, pr.WebURL)
 	result := merger.Merge(review.Comments, pr.LatestCommit)
 
@@ -47,6 +48,24 @@ func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullReq
 		// If we provide filePath but no line, it's a file comment.
 		if fc.FilePath != "" {
 			args["filePath"] = fc.FilePath
+			// For general file comments (no specific line), we don't strictly need lineType,
+			// but if we want to be safe or if it's attached to the first line:
+			// Let's check if the file is in diff. If so, we can try to attach to line 1 or just leave as file comment.
+			// The original logic just added "ADDED" for file comments. Let's make it smarter or keep it safe.
+			// If it's a file comment without line number, lineType might not be relevant or "CONTEXT" is fine.
+			// But wait, the previous fix simply added "ADDED" effectively.
+			// Let's use validator to check if file exists in diff.
+			if validator != nil {
+				// Check if file is in diff
+				if validator.FileInDiff(fc.FilePath) {
+					// If it is in diff, "ADDED" is usually safe for new files, but for modified files?
+					// Actually, for file-level comments, Bitbucket might not require lineType if line is not set.
+					// But if we want to be consistent:
+					args["lineType"] = "ADDED" // Defaulting to ADDED as per previous fix for safety on new files.
+				}
+			} else {
+				args["lineType"] = "ADDED" // Fallback
+			}
 		}
 
 		slog.Debug("post merged file comment", "file", fc.FilePath)
@@ -62,7 +81,7 @@ func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullReq
 	toPostIndividual := p.filterDuplicates(result.NotMerged, existingComments)
 	if len(toPostIndividual) > 0 {
 		slog.Debug("post hybrid individual comments", "count", len(toPostIndividual))
-		if err := p.postIndividualComments(ctx, pr, toPostIndividual); err != nil {
+		if err := p.postIndividualComments(ctx, pr, toPostIndividual, validator); err != nil {
 			slog.Error("post hybrid individual comments failed", "error", err)
 		}
 	}
@@ -100,7 +119,7 @@ func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullReq
 	return p.cleanupSession(pr.ID)
 }
 
-func (p *PRProcessor) postIndividualComments(ctx context.Context, pr *domain.PullRequest, comments []domain.ReviewComment) error {
+func (p *PRProcessor) postIndividualComments(ctx context.Context, pr *domain.PullRequest, comments []domain.ReviewComment, validator *validator.CommentValidator) error {
 	pullRequestId, err := strconv.Atoi(pr.ID)
 	if err != nil {
 		return fmt.Errorf("invalid pr id: %s", pr.ID)
@@ -126,6 +145,17 @@ func (p *PRProcessor) postIndividualComments(ctx context.Context, pr *domain.Pul
 
 			if comment.File != "" {
 				args["filePath"] = comment.File
+
+				// Determine line type dynamically
+				lineType := "ADDED" // Default fallback
+				if validator != nil {
+					lt := validator.GetLineType(comment.File, comment.Line)
+					if lt != "" {
+						lineType = lt
+					}
+				}
+				args["lineType"] = lineType
+
 				if comment.Line > 0 {
 					args["lineNumber"] = strconv.Itoa(comment.Line)
 				}

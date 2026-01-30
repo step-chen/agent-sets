@@ -169,7 +169,7 @@ func TestE2E_Main(t *testing.T) {
 				if params.Name == config.ToolBitbucketAddComment {
 					mu.Lock()
 					file := currentFile
-					comment := fmt.Sprintf("%v", params.Arguments["commentText"])
+					comment := fmt.Sprintf("Path: %v | LineType: %v | Comment: %v", params.Arguments["filePath"], params.Arguments["lineType"], params.Arguments["commentText"])
 					capturedData[file] = append(capturedData[file], comment)
 					mu.Unlock()
 

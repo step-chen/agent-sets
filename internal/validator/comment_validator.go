@@ -16,14 +16,16 @@ type LineRange struct {
 // CommentValidator validates AI comments against diff ranges
 // It ensures comments only target lines that were actually modified (+ lines in diff)
 type CommentValidator struct {
-	validRanges map[string][]LineRange // file -> valid line ranges (only + lines)
-	allFiles    map[string]bool        // all files in diff
+	validRanges map[string][]LineRange    // file -> valid line ranges (only + lines)
+	lineTypes   map[string]map[int]string // file -> line -> type (ADDED/CONTEXT)
+	allFiles    map[string]bool           // all files in diff
 }
 
 // NewCommentValidator creates a validator from a unified diff string
 func NewCommentValidator(diff string) *CommentValidator {
 	v := &CommentValidator{
 		validRanges: make(map[string][]LineRange),
+		lineTypes:   make(map[string]map[int]string),
 		allFiles:    make(map[string]bool),
 	}
 	v.parseDiff(diff)
@@ -48,6 +50,9 @@ func (v *CommentValidator) parseDiff(diff string) {
 		if matches := filePattern.FindStringSubmatch(line); len(matches) > 1 {
 			currentFile = v.normalizeFilePath(strings.TrimSpace(matches[1]))
 			v.allFiles[currentFile] = true
+			if _, ok := v.lineTypes[currentFile]; !ok {
+				v.lineTypes[currentFile] = make(map[int]string)
+			}
 			inHunk = false
 			continue
 		}
@@ -68,16 +73,38 @@ func (v *CommentValidator) parseDiff(diff string) {
 		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
 			// This is an added/modified line - valid for comments
 			v.addValidLine(currentFile, currentLineNum)
+			v.lineTypes[currentFile][currentLineNum] = "ADDED"
 			currentLineNum++
 		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
 			// Deleted line - doesn't increment new file line number
 		} else if strings.HasPrefix(line, " ") || line == "" {
-			// Context line - increment line number and also treat as valid for inline comment!
-			// We allow comments on context lines within the hunk to provide more comprehensive feedback.
+			// Context line - increment line number and type as CONTEXT
 			v.addValidLine(currentFile, currentLineNum)
+			v.lineTypes[currentFile][currentLineNum] = "CONTEXT"
 			currentLineNum++
 		}
 	}
+}
+
+// GetLineType returns the type of the line (ADDED or CONTEXT) if available
+func (v *CommentValidator) GetLineType(file string, line int) string {
+	normalizedFile := v.normalizeFilePath(file)
+	if types, ok := v.lineTypes[normalizedFile]; ok {
+		if t, ok := types[line]; ok {
+			return t
+		}
+	}
+
+	// Fallback to partial match if exact file match fails
+	for f, types := range v.lineTypes {
+		if strings.HasSuffix(f, normalizedFile) || strings.HasSuffix(normalizedFile, f) {
+			if t, ok := types[line]; ok {
+				return t
+			}
+		}
+	}
+
+	return ""
 }
 
 // addValidLine adds a line to the valid ranges, merging adjacent ranges
