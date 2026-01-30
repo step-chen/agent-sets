@@ -231,7 +231,23 @@ func (v *CommentValidator) GetValidRanges(file string) []LineRange {
 }
 
 // normalizeFilePath normalizes file paths for comparison
+var (
+	markdownLinkRegex = regexp.MustCompile(`^\[(.*?)\]\(.*?\)$`)
+	urlPrefixRegex    = regexp.MustCompile(`^(?:tree|blob)/[^/]+/`)
+)
+
 func (v *CommentValidator) normalizeFilePath(file string) string {
+	// 1. Strip Markdown link: [file.go](...) -> file.go
+	if matches := markdownLinkRegex.FindStringSubmatch(file); len(matches) > 1 {
+		file = matches[1]
+	}
+
+	// 2. Standardize separators to forward slashes
+	file = strings.ReplaceAll(file, "\\", "/")
+
+	// 3. Strip common URL prefixes (e.g. tree/main/, blob/master/)
+	file = urlPrefixRegex.ReplaceAllString(file, "")
+
 	return domain.NormalizePath(file)
 }
 

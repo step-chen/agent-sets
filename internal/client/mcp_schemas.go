@@ -65,8 +65,25 @@ func (c *MCPClient) doRefreshToolCache(ctx context.Context) error {
 			continue
 		}
 
+		// Get allowed tools for this server
+		c.mu.RLock()
+		allowedTools := c.endpoints[name].allowedTools
+		c.mu.RUnlock()
+
+		// Allowed tools set for fast lookup
+		allowedMap := make(map[string]bool)
+		for _, t := range allowedTools {
+			allowedMap[t] = true
+		}
+		restrictTools := len(allowedTools) > 0
+
 		var schemas []types.RawToolSchema
 		for _, t := range toolsResult.Tools {
+			// Filter logic: if restricted, must be in allowedMap
+			if restrictTools && !allowedMap[t.Name] {
+				continue
+			}
+
 			schema := types.RawToolSchema{
 				Name: t.Name,
 			}
@@ -90,7 +107,7 @@ func (c *MCPClient) doRefreshToolCache(ctx context.Context) error {
 			schemas = append(schemas, schema)
 		}
 		newCache[name] = schemas
-		slog.Debug("tool cache: fetched", "server", name, "tools", len(schemas))
+		slog.Debug("tool cache: fetched", "server", name, "tools_fetched", len(toolsResult.Tools), "tools_cached", len(schemas))
 	}
 
 	if len(errs) > 0 {

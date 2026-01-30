@@ -24,10 +24,10 @@ func (p *PRProcessor) validateComments(comments []domain.ReviewComment, v *valid
 		}
 
 		// STRICT VALIDATION: Always ensure comment is on a valid diff line
-		if v.IsValid(c.File, c.Line) {
+		if v.IsValid(c.File, int(c.Line)) {
 			valid = append(valid, c)
 		} else {
-			reason := v.GetInvalidReason(c.File, c.Line)
+			reason := v.GetInvalidReason(c.File, int(c.Line))
 			slog.Warn("invalid comment line",
 				"file", c.File,
 				"line", c.Line,
@@ -138,7 +138,7 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 
 				comments = append(comments, domain.ReviewComment{
 					File:    path,
-					Line:    line,
+					Line:    domain.FlexibleLine(line),
 					Comment: cleanComment,
 					Marker:  marker,
 				})
@@ -217,7 +217,7 @@ func parseTableComments(content string) []domain.ReviewComment {
 
 					comments = append(comments, domain.ReviewComment{
 						File:     defaultFile,
-						Line:     lineNum,
+						Line:     domain.FlexibleLine(lineNum),
 						Comment:  msg,
 						Severity: severity,
 					})
@@ -237,7 +237,7 @@ func parseTableComments(content string) []domain.ReviewComment {
 
 					comments = append(comments, domain.ReviewComment{
 						File:    file,
-						Line:    lineNum,
+						Line:    domain.FlexibleLine(lineNum),
 						Comment: msg,
 					})
 				}

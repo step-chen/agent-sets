@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 
 	"pr-review-automation/internal/client"
@@ -76,6 +79,11 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 	}
 
 	// 2. Load System Prompt
+	// [New] Dynamic Language Rule Injection
+	lRules, lNames := s.loadLanguageRules(changes)
+	data["LanguageRules"] = lRules
+	data["Language"] = lNames
+
 	systemPromptStr, err := s.promptLoader.LoadPrompt(s.cfg.Stage3Review.PromptTemplate, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load stage 3 prompt: %w", err)
@@ -161,4 +169,105 @@ func cleanJSON(s string) string {
 		s = strings.TrimSuffix(s, "```")
 	}
 	return strings.TrimSpace(s)
+}
+
+// ----------------------------------------------------------------------------
+// Dynamic Rule Detection Logic
+// ----------------------------------------------------------------------------
+
+func (s *Stage3) loadLanguageRules(changes []FileChange) (string, string) {
+	detector := NewRuleDetector()
+	rules := detector.Detect(changes)
+
+	if len(rules) == 0 {
+		return "", ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Domain Specific Rules\n\n")
+
+	for _, r := range rules {
+		// Try to load prompts/rules/<rule>.md
+		// We use PromptLoader.LoadPrompt but path is "rules/<rule>"
+		content, err := s.promptLoader.LoadPrompt(filepath.Join("rules", r), nil)
+		if err != nil {
+			slog.Debug("rule prompt not found", "rule", r, "error", err)
+			continue
+		}
+		sb.WriteString(content)
+		sb.WriteString("\n\n")
+	}
+
+	return sb.String(), strings.Join(rules, ", ")
+}
+
+type RuleDetector struct {
+	ExtRules      map[string]string
+	FilenameRules map[string]string
+	ContentRules  map[string]*regexp.Regexp
+}
+
+func NewRuleDetector() *RuleDetector {
+	return &RuleDetector{
+		ExtRules: map[string]string{
+			".cpp": "cpp", ".cxx": "cpp", ".cc": "cpp", ".c": "cpp",
+			".h": "cpp", ".hpp": "cpp", ".hxx": "cpp", ".inc": "cpp",
+			".go": "go",
+			".py": "py", ".pyi": "py", ".pyw": "py",
+			".sql":  "sql",
+			".java": "java",
+		},
+		FilenameRules: map[string]string{
+			"Dockerfile": "docker",
+		},
+		ContentRules: map[string]*regexp.Regexp{
+			"sql": regexp.MustCompile(`(?i)(SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+.+\s+SET|CREATE\s+TABLE|DELETE\s+FROM)`),
+			"k8s": regexp.MustCompile(`(?i)^[\+\s]*(apiVersion:|kind:\s+(Deployment|Service|Pod|ConfigMap|Secret|Ingress|StatefulSet|DaemonSet|Job|CronJob))`),
+		},
+	}
+}
+
+func (d *RuleDetector) Detect(changes []FileChange) []string {
+	detected := make(map[string]bool)
+
+	for _, file := range changes {
+		baseName := filepath.Base(file.Path)
+		ext := strings.ToLower(filepath.Ext(file.Path))
+
+		// 1. Filename Match (Prefix)
+		for prefix, rule := range d.FilenameRules {
+			if strings.HasPrefix(baseName, prefix) {
+				detected[rule] = true
+			}
+		}
+
+		// 2. Extension Match
+		if rule, ok := d.ExtRules[ext]; ok {
+			detected[rule] = true
+		}
+
+		// 3. Content Scan (Heuristic)
+		// Only scan added lines
+		for rule, pattern := range d.ContentRules {
+			if detected[rule] {
+				continue // Already detected
+			}
+			for _, hunk := range file.HunkLines {
+				if strings.HasPrefix(hunk, "+") {
+					// Check content
+					if pattern.MatchString(hunk) {
+						detected[rule] = true
+						break // Found for this rule in this file
+					}
+				}
+			}
+		}
+	}
+
+	keys := make([]string, 0, len(detected))
+	for k := range detected {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

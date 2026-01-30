@@ -214,9 +214,15 @@ func TestE2E_Main(t *testing.T) {
 		t.Fatalf("Failed to list request files: %v", err)
 	}
 	sort.Strings(files)
+	t.Logf("Found %d request files: %v", len(files), files)
 
 	for _, file := range files {
 		fileName := filepath.Base(file)
+
+		mu.Lock()
+		currentFile = fileName
+		mu.Unlock()
+
 		t.Logf("Processing request: %s", fileName)
 
 		// Read Body
@@ -260,24 +266,9 @@ func TestE2E_Main(t *testing.T) {
 
 	// 8. Print Report
 	fmt.Println("\n=== E2E Test Result Summary ===")
-	// Since processing is async and concurrent, we can't easily attribute comments to specific
-	// input files without complex tracking. We group by Map Key (FileName was used, but capturing mechanism
-	// needs to be independent of loop).
-	// NOTE: The InterceptingTransport used 'currentFile' which is now insufficient if we had true parallelism
-	// without sleeps. But since we sleep > debounce, the 'currentFile' approach 'mostly' works for attributing
-	// the *start* of the window, but the callback might happen later.
-	//
-	// To be perfectly safe in a concurrent world, we should group by Repos/PR from the Tool Call arguments.
-	// But for this output, we'll iterate the captured map.
-	//
-	// Improving Interceptor for Concurrency:
-	// We rely on the fact that capturedData is just a dump.
-
-	// Print captured data
-	mu.Lock()
-	defer mu.Unlock()
 
 	// Create a sorted list of keys for deterministic output
+	mu.Lock()
 	var keys []string
 	for k := range capturedData {
 		keys = append(keys, k)
@@ -285,16 +276,17 @@ func TestE2E_Main(t *testing.T) {
 	sort.Strings(keys)
 
 	for _, k := range keys {
-		fmt.Printf("Source/Context: %s\n", k)
+		fmt.Printf("\n>>> Processed Request: %s\n", k)
 		fmt.Println("-----------------------------------")
 		comments := capturedData[k]
 		if len(comments) == 0 {
 			fmt.Println("[NO COMMENTS CAPTURED]")
 		} else {
 			for i, c := range comments {
-				fmt.Printf("[Comment %d]\n%s\n\n", i+1, c)
+				fmt.Printf("[Comment %d]\n%s\n", i+1, c)
 			}
 		}
 		fmt.Println("==============================")
 	}
+	mu.Unlock()
 }

@@ -3,7 +3,9 @@ package webhook
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 )
 
@@ -90,6 +92,30 @@ func (p *WorkerPool) worker(id int) {
 			}()
 
 			if err := job(p.ctx); err != nil {
+				// Smart Requeue Strategy
+				// If error is timeout and queue has plenty of space (>50% free), requeue it.
+				isTimeout := errors.Is(err, context.DeadlineExceeded) ||
+					(err != nil && (strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline")))
+
+				if isTimeout {
+					cap := float64(cap(p.Queue))
+					len := float64(len(p.Queue))
+					free := cap - len
+
+					if free > cap*0.5 {
+						slog.Warn("Job timed out, requeuing due to healthy system load", "worker_id", id, "queue_usage", fmt.Sprintf("%.1f%%", (len/cap)*100))
+
+						// Non-blocking requeue attempt
+						select {
+						case p.Queue <- job:
+							return // Successfully requeued, skip error logging
+						default:
+							// Should not happen given the check, but race conditions exist
+							slog.Warn("Failed to requeue timed out job: queue became full")
+						}
+					}
+				}
+
 				slog.Error("Job execution failed", "worker_id", id, "error", err)
 			}
 		}()

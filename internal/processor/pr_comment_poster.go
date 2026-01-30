@@ -140,7 +140,7 @@ func (p *PRProcessor) postIndividualComments(ctx context.Context, pr *domain.Pul
 				"projectKey":    pr.ProjectKey,
 				"repoSlug":      pr.RepoSlug,
 				"pullRequestId": pullRequestId,
-				"commentText":   fmt.Sprintf("%s%s:%d:%s%s\n%s", config.MarkerAIReviewPrefix, comment.File, comment.Line, pr.LatestCommit, config.MarkerAIReviewSuffix, comment.Comment),
+				"commentText":   fmt.Sprintf("%s%s:%d:%s%s\n%s", config.MarkerAIReviewPrefix, comment.File, int(comment.Line), pr.LatestCommit, config.MarkerAIReviewSuffix, comment.Comment),
 			}
 
 			if comment.File != "" {
@@ -149,7 +149,7 @@ func (p *PRProcessor) postIndividualComments(ctx context.Context, pr *domain.Pul
 				// Determine line type dynamically
 				lineType := "ADDED" // Default fallback
 				if validator != nil {
-					lt := validator.GetLineType(comment.File, comment.Line)
+					lt := validator.GetLineType(comment.File, int(comment.Line))
 					if lt != "" {
 						lineType = lt
 					}
@@ -157,11 +157,11 @@ func (p *PRProcessor) postIndividualComments(ctx context.Context, pr *domain.Pul
 				args["lineType"] = lineType
 
 				if comment.Line > 0 {
-					args["lineNumber"] = strconv.Itoa(comment.Line)
+					args["lineNumber"] = strconv.Itoa(int(comment.Line))
 				}
 			}
 
-			slog.Debug("post comment", "file", comment.File, "line", comment.Line)
+			slog.Debug("post comment", "file", comment.File, "line", int(comment.Line))
 			_, err := p.commenter.CallTool(gCtx, config.MCPServerBitbucket, config.ToolBitbucketAddComment, args)
 			if err != nil {
 				slog.Error("post comment failed", "file", comment.File, "error", err)
