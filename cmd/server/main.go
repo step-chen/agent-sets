@@ -20,6 +20,7 @@ import (
 	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/processor"
 	"pr-review-automation/internal/storage"
+	internal_sync "pr-review-automation/internal/sync"
 	"pr-review-automation/internal/webhook"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -97,9 +98,12 @@ func main() {
 		slog.Warn("unknown storage driver", "driver", cfg.Storage.Driver)
 	}
 
+	// Initialize Task Tracker for background operations
+	taskTracker := internal_sync.NewTracker()
+
 	// Initialize PR processor
 	// Note: PRProcessor now uses domain types and generic Reviewer interface
-	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, store)
+	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, store, taskTracker)
 
 	// Initialize Payload Parser with filter
 	// Need to ensure payloadParser uses generic promptLoader or pipeline one
@@ -198,7 +202,13 @@ func main() {
 
 	done := make(chan struct{})
 	go func() {
+		// 1. Stop processing new webhooks & wait for workers
 		webhookHandler.WaitForCompletion()
+
+		// 2. Wait for background tasks (e.g. Audit Logs)
+		slog.Info("waiting for background tasks")
+		taskTracker.Wait()
+
 		close(done)
 	}()
 

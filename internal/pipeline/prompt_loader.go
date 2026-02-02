@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,7 +29,7 @@ func (l *PromptLoader) SetRawSchemaProvider(p types.RawSchemaProvider) {
 }
 
 // Load returns prompt content with fallback hierarchy
-func (l *PromptLoader) Load(project, language string, extraData map[string]interface{}) (string, error) {
+func (l *PromptLoader) Load(ctx context.Context, project, language string, extraData map[string]interface{}) (string, error) {
 	candidates := []string{
 		filepath.Join(l.baseDir, project, language+".md"),
 		filepath.Join(l.baseDir, project, "default.md"),
@@ -39,7 +40,7 @@ func (l *PromptLoader) Load(project, language string, extraData map[string]inter
 	for _, path := range candidates {
 		data, err := os.ReadFile(path)
 		if err == nil {
-			return l.render(string(data), extraData)
+			return l.render(ctx, string(data), extraData)
 		}
 		if !os.IsNotExist(err) {
 			return "", fmt.Errorf("read prompt %s: %w", path, err)
@@ -73,7 +74,8 @@ func NewPromptData() PromptData {
 	}
 }
 
-func (l *PromptLoader) render(tmplContent string, extraData map[string]interface{}) (string, error) {
+func (l *PromptLoader) render(ctx context.Context, tmplContent string, extraData map[string]interface{}) (string, error) {
+	_ = ctx
 	data := NewPromptData()
 	if val, ok := extraData["ProjectKey"].(string); ok {
 		data.ProjectKey = val
@@ -171,7 +173,7 @@ func getRawToolSignature(schemas map[string]map[string]interface{}, toolName str
 
 // LoadPrompt loads and renders a specific prompt file directly from the base directory.
 // Name should be relative path without extension, e.g. "pipeline/stage1"
-func (l *PromptLoader) LoadPrompt(name string, data map[string]interface{}) (string, error) {
+func (l *PromptLoader) LoadPrompt(ctx context.Context, name string, data map[string]interface{}) (string, error) {
 	// If name has extension, remove it
 	name = strings.TrimSuffix(name, ".md")
 
@@ -181,5 +183,5 @@ func (l *PromptLoader) LoadPrompt(name string, data map[string]interface{}) (str
 		return "", fmt.Errorf("read prompt %s: %w", path, err)
 	}
 
-	return l.render(string(tmplData), data)
+	return l.render(ctx, string(tmplData), data)
 }

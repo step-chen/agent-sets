@@ -23,7 +23,8 @@ PR Description: {{.PR.Description}}
 6. If the code looks good, do not invent issues.
 7. Output your review in strict JSON format matching the structure provided below. Do not include markdown keys like ```json.
 8. For the 'line' field, ALWAYS output a single integer (the start line). Do NOT output an array like `[10, 11]`.
-9. For the 'summary' field, provide a concise paragraph. Do NOT use headers (e.g. # or ##). Use bold or lists if formatting is needed. When referencing specific files or lines, use Markdown links in the format: [`path/to/file:line`](path/to/file#Lline).
+9. For the 'comments' field, strictly output a raw JSON array. **Do NOT output it as a stringified JSON string.**
+10. For the 'summary' field, provide a concise paragraph. Do NOT use headers (e.g. # or ##). Use bold or lists if formatting is needed. When referencing specific files or lines, use Markdown links in the format: [`path/to/file:line`](path/to/file#Lline).
 
 ## Changed Files
 

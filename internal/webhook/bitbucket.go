@@ -28,7 +28,7 @@ type BitbucketWebhookHandler struct {
 	prProcessor    processor.Processor
 	config         *config.Config
 	parser         *PayloadParser
-	workerPool     *WorkerPool
+	workerPool     *Pool[Job]
 	debouncer      *internal_sync.Debouncer
 	keyLock        *internal_sync.KeyLock
 	latestPayloads sync.Map // Map[string][]byte: PR-ID -> Latest Payload
@@ -46,8 +46,10 @@ func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Proces
 		workerCount = 1
 	}
 
-	wp := NewWorkerPool(workerCount, queueSize)
-	wp.Start()
+	wp := NewWorkerPool[Job](workerCount, queueSize, cfg.Webhook.MaxRetries, cfg.Server.ShutdownTimeout)
+	wp.Start(func(ctx context.Context, job Job) error {
+		return job(ctx)
+	})
 
 	// Initialize Debouncer
 	debounceWindow := cfg.Server.DebounceWindow
@@ -91,6 +93,7 @@ func (h *BitbucketWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 		metrics.WebhookRequests.WithLabelValues("error_read").Inc()
 		return
 	}
+	slog.Debug("received webhook payload", "body", string(body))
 
 	// 2. Security: Verify webhook signature if secret is configured
 	if h.config.Server.WebhookSecret != "" {
@@ -196,7 +199,8 @@ func (h *BitbucketWebhookHandler) submitJob(uniqueKey string) {
 
 		// Full Parse inside worker
 		// Calculate timeout for actual processing
-		procCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+		// Use shutdown_timeout to ensure the task's patience matches the system's shutdown budget.
+		procCtx, cancel := context.WithTimeout(ctx, h.config.Server.ShutdownTimeout)
 		defer cancel()
 
 		pr, err := h.parser.Parse(procCtx, payload)

@@ -52,7 +52,7 @@ func (s *Stage3) Review(ctx context.Context, req ReviewRequest, changes []FileCh
 		"Changes":      []FileChange{},
 		"Context":      []FileContent{},
 	}
-	baseSystemPrompt, err := s.promptLoader.LoadPrompt(s.cfg.Stage3Review.PromptTemplate, baseData)
+	baseSystemPrompt, err := s.promptLoader.LoadPrompt(ctx, s.cfg.Stage3Review.PromptTemplate, baseData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load base prompt for estimation: %w", err)
 	}
@@ -80,11 +80,11 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 
 	// 2. Load System Prompt
 	// [New] Dynamic Language Rule Injection
-	lRules, lNames := s.loadLanguageRules(changes)
+	lRules, lNames := s.loadLanguageRules(ctx, changes)
 	data["LanguageRules"] = lRules
 	data["Language"] = lNames
 
-	systemPromptStr, err := s.promptLoader.LoadPrompt(s.cfg.Stage3Review.PromptTemplate, data)
+	systemPromptStr, err := s.promptLoader.LoadPrompt(ctx, s.cfg.Stage3Review.PromptTemplate, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load stage 3 prompt: %w", err)
 	}
@@ -95,6 +95,7 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 	// 4. Call LLM
 	// Construct request using OpenAI types
 	val := shared.NewResponseFormatJSONObjectParam()
+	slog.Debug("LLM Request (Stage 3)", "system_prompt", systemPromptStr, "user_message", userMessage)
 	params := openai.ChatCompletionNewParams{
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(systemPromptStr),
@@ -118,13 +119,9 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 	responseStr := resp.Choices[0].Message.Content
 
 	// 5. Parse Result
-	var result domain.ReviewResult
-
-	// Try to clean up markdown code blocks if present (common with some models)
-	jsonStr := cleanJSON(responseStr)
-
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		slog.Error("failed to unmarshal review result", "error", err, "response", responseStr)
+	result, err := parseReviewResult(responseStr)
+	if err != nil {
+		slog.Error("failed to parse review result", "error", err, "response", responseStr)
 		// Don't fail completely, return empty result with error summary
 		return &domain.ReviewResult{
 			Summary: fmt.Sprintf("Failed to parse review result: %v", err),
@@ -132,17 +129,74 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 		}, nil
 	}
 
+	slog.Info("Stage 3: Completed", "comments_generated", len(result.Comments))
+	return result, nil
+}
+
+func parseReviewResult(responseStr string) (*domain.ReviewResult, error) {
+	// reviewResultInternal is a temporary struct to handle inconsistent LLM output
+	// where "comments" might be a raw array or a stringified JSON array.
+	type reviewResultInternal struct {
+		Comments interface{} `json:"comments"`
+		Score    int         `json:"score"`
+		Summary  string      `json:"summary"`
+		Model    string
+	}
+
+	var internalResult reviewResultInternal
+
+	// Try to clean up markdown code blocks if present (common with some models)
+	jsonStr := cleanJSON(responseStr)
+
+	if err := json.Unmarshal([]byte(jsonStr), &internalResult); err != nil {
+		return nil, err
+	}
+
+	var finalComments []domain.ReviewComment
+
+	// Robustly handle Comments field
+	switch v := internalResult.Comments.(type) {
+	case string:
+		// Case 1: Comments is a stringified JSON array
+		if err := json.Unmarshal([]byte(v), &finalComments); err != nil {
+			slog.Error("failed to unmarshal stringified comments", "error", err, "value", v)
+			// Proceed with empty comments but valid structure
+		}
+	case []interface{}:
+		// Case 2: Comments is a generic JSON array, need to re-marshal and unmarshal to strong type
+		data, _ := json.Marshal(v)
+		if err := json.Unmarshal(data, &finalComments); err != nil {
+			slog.Error("failed to remarshal comments array", "error", err)
+		}
+	case map[string]interface{}:
+		// Case 3: Comments is a single JSON object (LLM forgot the array brackets)
+		data, _ := json.Marshal(v)
+		var singleComment domain.ReviewComment
+		if err := json.Unmarshal(data, &singleComment); err == nil {
+			finalComments = append(finalComments, singleComment)
+		} else {
+			slog.Error("failed to remarshal single comment object", "error", err)
+		}
+	case nil:
+		// No comments
+	default:
+		slog.Warn("unknown type for comments field", "type", fmt.Sprintf("%T", v))
+	}
+
 	// Enrich comments with file paths if missing
-	for i := range result.Comments {
-		if result.Comments[i].Severity == "" {
-			result.Comments[i].Severity = domain.CommentSeverityInfo // Default
+	for i := range finalComments {
+		if finalComments[i].Severity == "" {
+			finalComments[i].Severity = domain.CommentSeverityInfo // Default
 		}
 	}
 
-	slog.Info("Stage 3: Completed", "comments_generated", len(result.Comments))
-	return &result, nil
+	return &domain.ReviewResult{
+		Comments: finalComments,
+		Score:    internalResult.Score,
+		Summary:  internalResult.Summary,
+		Model:    internalResult.Model,
+	}, nil
 }
-
 func (s *Stage3) getResultFormat() string {
 	return `{
   "comments": [
@@ -175,7 +229,7 @@ func cleanJSON(s string) string {
 // Dynamic Rule Detection Logic
 // ----------------------------------------------------------------------------
 
-func (s *Stage3) loadLanguageRules(changes []FileChange) (string, string) {
+func (s *Stage3) loadLanguageRules(ctx context.Context, changes []FileChange) (string, string) {
 	detector := NewRuleDetector()
 	rules := detector.Detect(changes)
 
@@ -189,7 +243,7 @@ func (s *Stage3) loadLanguageRules(changes []FileChange) (string, string) {
 	for _, r := range rules {
 		// Try to load prompts/rules/<rule>.md
 		// We use PromptLoader.LoadPrompt but path is "rules/<rule>"
-		content, err := s.promptLoader.LoadPrompt(filepath.Join("rules", r), nil)
+		content, err := s.promptLoader.LoadPrompt(ctx, filepath.Join("rules", r), nil)
 		if err != nil {
 			slog.Debug("rule prompt not found", "rule", r, "error", err)
 			continue

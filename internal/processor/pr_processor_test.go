@@ -3,10 +3,12 @@ package processor
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
+	internal_sync "pr-review-automation/internal/sync"
 	"strings"
 )
 
@@ -52,10 +54,10 @@ func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
 		},
 	}
 
-	callCount := 0
+	callCount := atomic.Int32{}
 	mockCommenter := &MockCommenter{
 		CallToolFunc: func(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
-			callCount++
+			callCount.Add(1)
 			// Helper to simulate comments response
 			if toolName == config.ToolBitbucketGetComments {
 				return `{"values":[]}`, nil
@@ -92,7 +94,8 @@ index 123..456 100644
 	}
 
 	// Create processor
-	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil)
+	tracker := internal_sync.NewTracker()
+	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil, tracker)
 
 	// Test data
 	pr := &domain.PullRequest{
@@ -113,8 +116,8 @@ index 123..456 100644
 	}
 
 	// Expect 3 calls: 1 fetch comments, 1 post comment, 1 post summary
-	if callCount != 3 {
-		t.Errorf("Expected 3 CallTool invocations, got %d", callCount)
+	if val := callCount.Load(); val != 3 {
+		t.Errorf("Expected 3 CallTool invocations, got %d", val)
 	}
 }
 
@@ -126,7 +129,8 @@ func TestPRProcessor_ProcessPullRequest_ReviewFail(t *testing.T) {
 	}
 	mockCommenter := &MockCommenter{}
 
-	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil)
+	tracker := internal_sync.NewTracker()
+	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil, tracker)
 
 	err := p.ProcessPullRequest(context.Background(), &domain.PullRequest{ID: "123"})
 	if err == nil {
@@ -175,7 +179,8 @@ func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
 			},
 		},
 	}
-	p := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil)
+	tracker := internal_sync.NewTracker()
+	p := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
 	pr := &domain.PullRequest{ID: "123", ProjectKey: "PROJ", RepoSlug: "repo"}
 
 	p.ProcessPullRequest(context.Background(), pr)

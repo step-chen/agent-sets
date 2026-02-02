@@ -22,6 +22,7 @@ import (
 	"pr-review-automation/internal/filter/bitbucket"
 	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/processor"
+	internal_sync "pr-review-automation/internal/sync"
 	"pr-review-automation/internal/webhook"
 
 	"github.com/joho/godotenv"
@@ -199,8 +200,9 @@ func TestE2E_Main(t *testing.T) {
 	promptLoader.SetRawSchemaProvider(mcpClient)
 
 	// Create Reviewer & Processor
+	taskTracker := internal_sync.NewTracker()
 	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, llm, promptLoader)
-	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, nil)
+	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, nil, taskTracker)
 
 	// Initialize Handler ONCE (Simulating a long-running server)
 	bbFilter := bitbucket.NewPayloadFilter()
@@ -262,6 +264,8 @@ func TestE2E_Main(t *testing.T) {
 	// This stops the worker pool, which waits for all active and queued jobs to finish.
 	t.Log("All requests sent. Waiting for worker pool to drain...")
 	handler.WaitForCompletion()
+	t.Log("Waiting for background tasks...")
+	taskTracker.Wait()
 	t.Log("All processing completed.")
 
 	// 8. Print Report

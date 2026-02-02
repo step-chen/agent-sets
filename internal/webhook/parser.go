@@ -151,7 +151,7 @@ func probe(body []byte, paths []string) gjson.Result {
 // askLLMToExtract implements the L2 parsing strategy using LLM.
 func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*domain.PullRequest, error) {
 	// 1. Prepare Prompt
-	sysPrompt, err := p.promptLoader.LoadPrompt("system/pr_webhook_parser", nil)
+	sysPrompt, err := p.promptLoader.LoadPrompt(ctx, "system/pr_webhook_parser", nil)
 	if err != nil {
 		// Fallback prompt if loader fails
 		sysPrompt = "You are a JSON parser. Extract id, projectKey, repoSlug, title, description, authorName, webUrl as JSON."
@@ -180,6 +180,7 @@ func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*doma
 		}
 
 		// Execute LLM Call
+		slog.Debug("LLM Request (L2 Parser)", "system_prompt", sysPrompt, "input", truncated)
 		respText, err := p.llm.SimpleTextQuery(ctx, sysPrompt, truncated)
 		if err == nil {
 			// Clean up response (sometimes LLMs include markdown blocks)

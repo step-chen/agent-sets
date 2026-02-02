@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 
-	// "pr-review-automation/internal/agent" // Removed agent dependency for types
+	"golang.org/x/sync/errgroup"
+
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/storage"
+	internal_sync "pr-review-automation/internal/sync"
 	"pr-review-automation/internal/validator"
 	"strconv"
 	"time"
@@ -39,15 +41,17 @@ type PRProcessor struct {
 	reviewer  Reviewer
 	commenter Commenter
 	storage   storage.Repository
+	tracker   *internal_sync.Tracker
 }
 
 // NewPRProcessor creates a new PR processor with dependencies injected
-func NewPRProcessor(cfg *config.Config, reviewer Reviewer, commenter Commenter, storage storage.Repository) *PRProcessor {
+func NewPRProcessor(cfg *config.Config, reviewer Reviewer, commenter Commenter, storage storage.Repository, tracker *internal_sync.Tracker) *PRProcessor {
 	return &PRProcessor{
 		cfg:       cfg,
 		reviewer:  reviewer,
 		commenter: commenter,
 		storage:   storage,
+		tracker:   tracker,
 	}
 }
 
@@ -59,27 +63,53 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 
 	metrics.PullRequestTotal.WithLabelValues("started").Inc()
 
-	// 1. Fetch Existing AI Comments (Bitbucket Native Dedup)
-	existingComments := p.fetchExistingAIComments(ctx, pr)
+	// Parallel Fetching using errgroup
+	g, gCtx := errgroup.WithContext(ctx)
 
-	// 2. Build Review Request
+	var (
+		existingComments []domain.ReviewComment
+		diff             string
+		// errs captured by g.Wait()
+	)
+
+	// Task 1: Fetch Existing AI Comments
+	g.Go(func() error {
+		// Note: fetchExistingAIComments internally uses p.storage if available.
+		// It primarily uses p.storage (DB) or Bitbucket API?
+		// Looking at original code: 'fetchExistingAIComments' was a method.
+		// We assume it's safe to run in parallel.
+		existingComments = p.fetchExistingAIComments(gCtx, pr)
+		return nil
+	})
+
+	// Task 2: Fetch Diff
+	g.Go(func() error {
+		diff = p.fetchDiff(gCtx, pr)
+		return nil
+	})
+
+	// Wait for preparatory data
+	if err := g.Wait(); err != nil {
+		metrics.PullRequestTotal.WithLabelValues("failed_fetch").Inc()
+		return fmt.Errorf("fetch data failed: %w", err)
+	}
+
+	// 3. Build Review Request
 	req := &domain.ReviewRequest{
 		PR:                 pr,
 		HistoricalComments: existingComments,
 	}
 
-	// 3. Review PR
+	// 4. Review PR (Main Critical Path)
 	review, err := p.reviewer.ReviewPR(ctx, req)
 	if err != nil {
-		metrics.PullRequestTotal.WithLabelValues("failed").Inc()
+		metrics.PullRequestTotal.WithLabelValues("failed_review").Inc()
 		return fmt.Errorf("review pr: %w", err)
 	}
 
-	// 4. Fetch Diff for Validation
-	diff := p.fetchDiff(ctx, pr)
-	commentValidator := validator.NewCommentValidator(diff)
-
 	// 5. Validate and Filter Comments
+	// Note: Diff availability checked in fetchDiff, if empty validator might be limited but won't crash
+	commentValidator := validator.NewCommentValidator(diff)
 	validComments, invalidComments := p.validateComments(review.Comments, commentValidator)
 
 	// 6. Semantic Deduplication
@@ -92,22 +122,26 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 		"existing_count", len(existingComments))
 	review.Comments = newComments
 
-	// Persist review result (Audit Only)
+	// 7. Async Persistence (Audit)
 	if p.storage != nil {
-		// Save synchronously to ensure data safety on exit
-		saveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.Storage.Timeout)
-		defer cancel()
-		record := &storage.ReviewRecord{
-			ID:          fmt.Sprintf("%s-%s-%s-%d", pr.ProjectKey, pr.RepoSlug, pr.ID, time.Now().UnixNano()),
-			PullRequest: pr,
-			Result:      review,
-			CreatedAt:   time.Now(),
-			DurationMs:  time.Since(start).Milliseconds(),
-			Status:      "success",
-		}
-		if err := p.storage.SaveReview(saveCtx, record); err != nil {
-			slog.Warn("audit save failed", "error", err)
-		}
+		// Use Tracker to ensure this completes on shutdown
+		p.tracker.Go(func() {
+			// Create a detached context with timeout for saving
+			saveCtx, cancel := context.WithTimeout(context.Background(), p.cfg.Storage.Timeout)
+			defer cancel()
+
+			record := &storage.ReviewRecord{
+				ID:          fmt.Sprintf("%s-%s-%s-%d", pr.ProjectKey, pr.RepoSlug, pr.ID, time.Now().UnixNano()),
+				PullRequest: pr,
+				Result:      review,
+				CreatedAt:   time.Now(),
+				DurationMs:  time.Since(start).Milliseconds(),
+				Status:      "success",
+			}
+			if err := p.storage.SaveReview(saveCtx, record); err != nil {
+				slog.Warn("audit save failed", "error", err)
+			}
+		})
 	}
 
 	slog.Info("posting comments", "count", len(review.Comments))

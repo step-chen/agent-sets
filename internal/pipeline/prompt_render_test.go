@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"pr-review-automation/internal/config"
@@ -35,7 +36,7 @@ func TestStage3_RenderPrompt_WithRules(t *testing.T) {
 	}
 
 	// 1. Test Rule Loading string
-	lRules, lNames := s.loadLanguageRules(changes)
+	lRules, lNames := s.loadLanguageRules(context.TODO(), changes)
 	fmt.Printf("Detected Languages: %s\n", lNames)
 	fmt.Printf("--- Loaded Rules Content ---\n%s\n----------------------------\n", lRules)
 
@@ -52,7 +53,7 @@ func TestStage3_RenderPrompt_WithRules(t *testing.T) {
 		"ResultFormat": "JSON_FORMAT_PLACEHOLDER",
 	}
 
-	prompt, err := loader.LoadPrompt(pipelineCfg.Stage3Review.PromptTemplate, data)
+	prompt, err := loader.LoadPrompt(context.TODO(), pipelineCfg.Stage3Review.PromptTemplate, data)
 	if err != nil {
 		t.Fatalf("Failed to render prompt: %v", err)
 	}
