@@ -19,13 +19,13 @@ server:
   debounce_window: 10s           # Debounce window for PR events
   read_timeout: 10s             # Timeout for reading request body
   write_timeout: 30s            # Timeout for writing response
-  shutdown_timeout: 30s         # Timeout for graceful shutdown
-  max_body_size: 2097152        # Max request body size (bytes, default 2MB)
+  shutdown_timeout: 900s        # Timeout for graceful shutdown
+  max_body_size: 524288         # Max request body size (bytes, default 512KB)
 
 llm:
   model: qwen3-coder            # LLM model name
   endpoint: http://localhost:8081/v1 # LLM API endpoint (OpenAI compatible)
-  timeout: 120s                 # LLM request timeout
+  timeout: 300s                 # LLM request timeout
 
 mcp:
   retry:
@@ -33,10 +33,10 @@ mcp:
     backoff: 1s                 # Initial retry backoff duration
     max_backoff: 30s            # Max retry backoff duration
   
-  timeout: 30s                  # MCP tool call timeout
+  timeout: 10s                  # MCP tool call timeout
   circuit_breaker:              # Circuit breaker configuration
     failure_threshold: 3        # Number of consecutive failures to trigger circuit breaker
-    open_duration: 30s          # Duration to keep circuit open
+    open_duration: 10s          # Duration to keep circuit open
 
   bitbucket:
     endpoint: http://localhost:8082 # Bitbucket MCP server endpoint
@@ -56,7 +56,7 @@ mcp:
     response_filters:           # Response filter configuration
       - name: "truncate"        # Filter name: truncate
         options:
-          max_len: 100000       # Max length limit
+          max_len: 81920        # Max length limit
 
   jira:
     endpoint: ""                # Jira MCP server endpoint (leave empty to disable)
@@ -78,15 +78,15 @@ pipeline:
   enabled: true                 # Enable pipeline mode (Stage 1-3)
   backend: direct               # Backend mode: direct (LLM direct) or agent (Agentic)
   max_concurrent_comments: 5    # Max concurrent comments to submit
-  response_max_string_len: 100000 # Max string length for response
+  response_max_string_len: 81920 # Max string length for response
 
   stage2_context:               # Stage 2: Context enrichment config
     max_extra_files: 5          # Max extra files to include
     max_file_size: 50000        # Max file size to read (bytes)
 
   stage3_review:                # Stage 3: Code review config
-    temperature: 0.0            # LLM temperature
-    max_context_tokens: 256000  # Max context token limit
+    temperature: 0.1            # LLM temperature
+    max_context_tokens: 81920   # Max context token limit
     degradation:                # Degradation strategy (when context limit exceeded)
       l1_context_lines: 50      # L1: Context lines to keep around changes
       l2_chunk_by_file: true    # L2: Chunk processing by file
