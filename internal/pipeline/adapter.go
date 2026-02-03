@@ -51,10 +51,20 @@ func (pa *PipelineAdapter) ReviewPR(ctx context.Context, req *domain.ReviewReque
 	}
 
 	// 1. Stage 1: Diff Extraction
-	changes, err := pa.pipeline.stage1.ExtractDiffs(ctx, pipelineReq)
-	if err != nil {
-		return nil, fmt.Errorf("stage 1 failed: %w", err)
+	var changes []FileChange
+	if cached, ok := req.CachedStage1.([]FileChange); ok && cached != nil {
+		changes = cached
+		slog.Info("Stage 1: Using cached diff results", "pr_id", req.PR.ID)
+	} else {
+		var err error
+		slog.Info("Stage 1: Starting Diff Extraction", "pr_id", req.PR.ID)
+		changes, err = pa.pipeline.stage1.ExtractDiffs(ctx, pipelineReq)
+		if err != nil {
+			return nil, fmt.Errorf("stage 1 failed: %w", err)
+		}
+		req.CachedStage1 = changes
 	}
+
 	if len(changes) == 0 {
 		return &domain.ReviewResult{
 			Comments: []domain.ReviewComment{},
@@ -65,11 +75,19 @@ func (pa *PipelineAdapter) ReviewPR(ctx context.Context, req *domain.ReviewReque
 	}
 
 	// 2. Stage 2: Context Collection
-	// Note: We currently don't use context files in Stage 3 prompt yet, but it's ready to be added.
-	contextFiles, err := pa.pipeline.stage2.CollectContext(ctx, pipelineReq, changes)
-	if err != nil {
-		slog.Warn("stage 2 partially failed", "error", err)
-		// Proceed even if context collection fails, using empty context
+	var contextFiles []FileContent
+	if cached, ok := req.CachedStage2.([]FileContent); ok && cached != nil {
+		contextFiles = cached
+		slog.Info("Stage 2: Using cached context results", "pr_id", req.PR.ID)
+	} else {
+		var err error
+		slog.Info("Stage 2: Starting Context Collection", "pr_id", req.PR.ID)
+		contextFiles, err = pa.pipeline.stage2.CollectContext(ctx, pipelineReq, changes)
+		if err != nil {
+			slog.Warn("stage 2 partially failed", "error", err)
+			// Proceed even if context collection fails, using empty context
+		}
+		req.CachedStage2 = contextFiles
 	}
 
 	// 3. Stage 3: Direct Review

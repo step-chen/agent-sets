@@ -90,6 +90,12 @@ type ReviewRequest struct {
 	PR                 *PullRequest
 	HistoricalComments []ReviewComment
 	DegradeHint        int // 0=None, 1=Truncate, 2=Drop
+
+	// Stage 缓存 (用于重试时复用)
+	// 使用 interface{} 避免 domain -> pipeline 循环依赖 (pipeline.FileChange/FileContent)
+	// 使用时进行类型断言：*[]pipeline.FileChange 和 *[]pipeline.FileContent
+	CachedStage1 interface{} `json:"-"`
+	CachedStage2 interface{} `json:"-"`
 }
 
 // ReviewResult represents the outcome of a review

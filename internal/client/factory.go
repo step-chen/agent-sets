@@ -3,6 +3,7 @@ package client
 import (
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/llm"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -24,4 +25,18 @@ func NewLLM(cfg *config.Config) (llm.Client, error) {
 		adapter.SetTimeout(cfg.LLM.Timeout)
 	}
 	return adapter, nil
+}
+
+// NewLLMFromConfig creates a specific LLM client from config parameters
+func NewLLMFromConfig(endpoint, apiKey, model string, timeout time.Duration) llm.Client {
+	client := openai.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(endpoint),
+	)
+	// Default concurrency 1 for specific/backup clients
+	adapter := NewOpenAIAdapterWithConfig(&client, model, endpoint, apiKey, 1)
+	if timeout > 0 {
+		adapter.SetTimeout(timeout)
+	}
+	return adapter
 }

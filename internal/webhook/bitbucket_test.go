@@ -22,12 +22,12 @@ import (
 
 // MockProcessor implements processor.Processor for testing
 type MockProcessor struct {
-	ProcessFunc func(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error
+	ProcessFunc func(ctx context.Context, req *domain.ReviewRequest) error
 }
 
-func (m *MockProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error {
+func (m *MockProcessor) ProcessPullRequest(ctx context.Context, req *domain.ReviewRequest) error {
 	if m.ProcessFunc != nil {
-		return m.ProcessFunc(ctx, pr, degradeLevel)
+		return m.ProcessFunc(ctx, req)
 	}
 	return nil
 }
@@ -85,7 +85,7 @@ func TestBitbucketWebhookHandler_MethodNotAllowed(t *testing.T) {
 		},
 	}
 	parser := createTestParser(t, &MockLLM{})
-	handler := NewBitbucketWebhookHandler(cfg, nil, parser)
+	handler := NewBitbucketWebhookHandler(cfg, nil, parser, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/webhook", nil)
 	w := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestBitbucketWebhookHandler_InvalidJSON(t *testing.T) {
 		},
 	}
 	parser := createTestParser(t, &MockLLM{})
-	handler := NewBitbucketWebhookHandler(cfg, nil, parser)
+	handler := NewBitbucketWebhookHandler(cfg, nil, parser, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewBufferString("not valid json"))
 	w := httptest.NewRecorder()
@@ -159,14 +159,14 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L1(t *testing.T) {
 
 	processed := make(chan *domain.PullRequest, 1)
 	mockProc := &MockProcessor{
-		ProcessFunc: func(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error {
-			processed <- pr
+		ProcessFunc: func(ctx context.Context, req *domain.ReviewRequest) error {
+			processed <- req.PR
 			return nil
 		},
 	}
 
 	parser := createTestParser(t, &MockLLM{})
-	handler := NewBitbucketWebhookHandler(cfg, mockProc, parser)
+	handler := NewBitbucketWebhookHandler(cfg, mockProc, parser, nil)
 
 	// L1 Payload
 	jsonBody := `{
@@ -231,8 +231,8 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L2(t *testing.T) {
 
 	processed := make(chan *domain.PullRequest, 1)
 	mockProc := &MockProcessor{
-		ProcessFunc: func(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error {
-			processed <- pr
+		ProcessFunc: func(ctx context.Context, req *domain.ReviewRequest) error {
+			processed <- req.PR
 			return nil
 		},
 	}
@@ -251,7 +251,7 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L2(t *testing.T) {
 	}
 
 	parser := createTestParser(t, mockLLM)
-	handler := NewBitbucketWebhookHandler(cfg, mockProc, parser)
+	handler := NewBitbucketWebhookHandler(cfg, mockProc, parser, nil)
 
 	// Payload with completely unknown structure that L1 fails to parse all required fields
 	// L1 needs ID, ProjectKey to consider "Valid" (actually IsValid checks ID, ProjectKey, RepoSlug)
@@ -306,7 +306,7 @@ func TestBitbucketWebhookHandler_BodySizeLimit(t *testing.T) {
 		},
 	}
 	parser := createTestParser(t, &MockLLM{})
-	handler := NewBitbucketWebhookHandler(cfg, nil, parser)
+	handler := NewBitbucketWebhookHandler(cfg, nil, parser, nil)
 
 	largePayload := bytes.Repeat([]byte("a"), 100)
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewBuffer(largePayload))

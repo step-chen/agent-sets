@@ -28,6 +28,7 @@ type Pool[T any] struct {
 	maxRetries      int
 	retryDegrade    bool
 	shutdownTimeout time.Duration
+	backupHandler   func(context.Context, T, int) error
 
 	// Lifecycle
 	wg     sync.WaitGroup
@@ -40,6 +41,7 @@ type item[T any] struct {
 	payload      T
 	retryCount   int
 	degradeLevel int
+	usedBackup   bool
 }
 
 // NewWorkerPool creates a new generic Pool
@@ -92,6 +94,11 @@ func (p *Pool[T]) Stop() {
 	}
 }
 
+// SetBackupHandler sets the handler for backup LLM retries
+func (p *Pool[T]) SetBackupHandler(handler func(context.Context, T, int) error) {
+	p.backupHandler = handler
+}
+
 // Submit adds a job to the queue. Returns error if closed or full.
 func (p *Pool[T]) Submit(payload T) error {
 	if p.closed.Load() {
@@ -124,14 +131,43 @@ func (p *Pool[T]) processTask(workerID int, task item[T], handler func(context.C
 	}()
 
 	// Execute handler with degradeLevel
-	err := handler(p.ctx, task.payload, task.degradeLevel)
+	var err error
+	if task.usedBackup && p.backupHandler != nil {
+		err = p.backupHandler(p.ctx, task.payload, task.degradeLevel)
+	} else {
+		err = handler(p.ctx, task.payload, task.degradeLevel)
+	}
 	if err == nil {
 		return
 	}
 
 	// Handle Retry
 	if task.retryCount >= p.maxRetries {
-		slog.Error("Job failed after max retries", "worker_id", workerID, "error", err)
+		// 尝试备用 LLM (如果配置了且尚未使用)
+		if p.backupHandler != nil && !task.usedBackup {
+			slog.Warn("Primary LLM exhausted, attempting backup LLM",
+				"degrade_level", task.degradeLevel) // 记录当前降级级别
+			task.usedBackup = true
+			task.retryCount = 0
+
+			// 关键：保持 degradeLevel 不变，复用已确定的降级策略
+			// 配合 CachedStage1/2，备用 LLM 只执行 Stage 3
+			go func() {
+				// Use non-blocking send or drop if full, similar to retry logic
+				// But since this is a "new" attempt mode, we try to enqueue.
+				// NOTE: We launch a goroutine to avoid blocking the worker if queue is full.
+				select {
+				case p.queue <- task:
+					slog.Info("Job requeued for backup LLM")
+				default:
+					slog.Error("Failed to requeue for backup LLM: queue full")
+					metrics.WebhookRequests.WithLabelValues("dropped_backup_full").Inc()
+				}
+			}()
+			return
+		}
+
+		slog.Error("Job failed after max retries (including backup)", "worker_id", workerID, "error", err)
 		return
 	}
 

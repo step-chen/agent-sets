@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"pr-review-automation/internal/config"
+	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/processor"
 	internal_sync "pr-review-automation/internal/sync" // Custom sync package
@@ -23,19 +24,26 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// Submission represents a PR processing job
+type Submission struct {
+	UniqueKey string
+	Payload   []byte
+	Req       *domain.ReviewRequest // Persisted across retries to enable Stage 1/2 caching
+}
+
 // BitbucketWebhookHandler handles incoming Bitbucket webhook events
 type BitbucketWebhookHandler struct {
 	prProcessor    processor.Processor
 	config         *config.Config
 	parser         *PayloadParser
-	workerPool     *Pool[Job]
+	workerPool     *Pool[*Submission]
 	debouncer      *internal_sync.Debouncer
 	keyLock        *internal_sync.KeyLock
 	latestPayloads sync.Map // Map[string][]byte: PR-ID -> Latest Payload
 }
 
 // NewBitbucketWebhookHandler creates a new webhook handler
-func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Processor, parser *PayloadParser) *BitbucketWebhookHandler {
+func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Processor, parser *PayloadParser, backupHandler func(context.Context, *domain.ReviewRequest, int) error) *BitbucketWebhookHandler {
 	// Initialize Worker Pool
 	queueSize := cfg.Server.QueueSize
 	if queueSize <= 0 {
@@ -46,18 +54,78 @@ func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Proces
 		workerCount = 1
 	}
 
-	wp := NewWorkerPool[Job](workerCount, queueSize, cfg.Webhook.MaxRetries, cfg.Webhook.RetryDegrade, cfg.Server.ShutdownTimeout)
-	wp.Start(func(ctx context.Context, job Job, degradeLevel int) error {
-		return job(ctx, degradeLevel)
-	})
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+
+	wp := NewWorkerPool[*Submission](workerCount, queueSize, cfg.Webhook.MaxRetries, cfg.Webhook.RetryDegrade, cfg.Server.ShutdownTimeout)
+
+	keyLock := internal_sync.NewKeyLock()
 
 	// Initialize Debouncer
 	debounceWindow := cfg.Server.DebounceWindow
 	if debounceWindow <= 0 {
 		debounceWindow = 2 * time.Second
 	}
+
+	// Helper to execute processing
+	execute := func(ctx context.Context, sub *Submission, degradeLevel int, useBackup bool) error {
+		// Acquire PR-level Lock
+		keyLock.Lock(sub.UniqueKey)
+		defer keyLock.Unlock(sub.UniqueKey)
+
+		// Panic recovery
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Panic recovered in pr worker", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+
+		// Parse (only if not already parsed in a previous retry attempt)
+		if sub.Req == nil {
+			procCtx, cancel := context.WithTimeout(ctx, cfg.Server.ShutdownTimeout)
+			defer cancel()
+
+			pr, err := parser.Parse(procCtx, sub.Payload)
+			if err != nil {
+				slog.Error("payload parse failed", "error", err)
+				metrics.PayloadParseFailures.WithLabelValues("both").Inc()
+				return err
+			}
+
+			if !pr.IsValid() {
+				slog.Error("parsed pr invalid", "pr", pr)
+				metrics.WebhookRequests.WithLabelValues("invalid_payload").Inc()
+				return fmt.Errorf("invalid pr")
+			}
+			sub.Req = &domain.ReviewRequest{
+				PR: pr,
+			}
+		}
+
+		// Update DegradeHint in the request for this attempt
+		sub.Req.DegradeHint = degradeLevel
+
+		slog.Info("processing pr", "pr_id", sub.Req.PR.ID, "repo", sub.Req.PR.RepoSlug, "backup", useBackup)
+
+		if useBackup && backupHandler != nil {
+			return backupHandler(ctx, sub.Req, degradeLevel)
+		}
+
+		return prProcessor.ProcessPullRequest(ctx, sub.Req)
+	}
+
+	wp.Start(func(ctx context.Context, sub *Submission, degradeLevel int) error {
+		return execute(ctx, sub, degradeLevel, false)
+	})
+
+	if backupHandler != nil {
+		wp.SetBackupHandler(func(ctx context.Context, sub *Submission, degradeLevel int) error {
+			return execute(ctx, sub, degradeLevel, true)
+		})
+	}
+
 	debouncer := internal_sync.NewDebouncer(debounceWindow)
-	keyLock := internal_sync.NewKeyLock()
 
 	return &BitbucketWebhookHandler{
 		prProcessor: prProcessor,
@@ -184,44 +252,9 @@ func (h *BitbucketWebhookHandler) submitJob(uniqueKey string) {
 	payload := val.([]byte)
 
 	// 2. Submit to WorkerPool
-	err := h.workerPool.Submit(func(ctx context.Context, degradeLevel int) error {
-		// Acquire PR-level Lock to ensure serial processing for this PR
-		// This protects against multiple workers picking up different debounced events for same PR (rare but possible)
-		h.keyLock.Lock(uniqueKey)
-		defer h.keyLock.Unlock(uniqueKey)
-
-		// Panic recovery for safety
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("Panic recovered in pr worker", "panic", r, "stack", string(debug.Stack()))
-			}
-		}()
-
-		// Full Parse inside worker
-		// Calculate timeout for actual processing
-		// Use shutdown_timeout to ensure the task's patience matches the system's shutdown budget.
-		procCtx, cancel := context.WithTimeout(ctx, h.config.Server.ShutdownTimeout)
-		defer cancel()
-
-		pr, err := h.parser.Parse(procCtx, payload)
-		if err != nil {
-			slog.Error("payload parse failed", "error", err)
-			metrics.PayloadParseFailures.WithLabelValues("both").Inc()
-			return err
-		}
-
-		if !pr.IsValid() {
-			slog.Error("parsed pr invalid", "pr", pr)
-			metrics.WebhookRequests.WithLabelValues("invalid_payload").Inc()
-			return fmt.Errorf("invalid pr")
-		}
-
-		slog.Info("processing pr", "pr_id", pr.ID, "repo", pr.RepoSlug)
-		if err := h.prProcessor.ProcessPullRequest(procCtx, pr, degradeLevel); err != nil {
-			slog.Error("process pr failed", "error", err, "pr_id", pr.ID)
-			return err
-		}
-		return nil
+	err := h.workerPool.Submit(&Submission{
+		UniqueKey: uniqueKey,
+		Payload:   payload,
 	})
 
 	if err != nil {

@@ -16,7 +16,9 @@ import (
 
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
+	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/filter/bitbucket"
+	"pr-review-automation/internal/llm"
 	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/processor"
 	"pr-review-automation/internal/storage"
@@ -46,17 +48,31 @@ func main() {
 	mcpClient := client.NewMCPClient(cfg)
 
 	// Create LLM once at startup
-	llm, err := client.NewLLM(cfg)
+	primaryLLM, err := client.NewLLM(cfg)
 	if err != nil {
 		slog.Error("create llm failed", "error", err)
 		os.Exit(1)
 	}
 
 	// Verify LLM connection
-	if checker, ok := llm.(interface{ Ping(context.Context) error }); ok {
+	if checker, ok := primaryLLM.(interface{ Ping(context.Context) error }); ok {
 		if err := checker.Ping(context.Background()); err != nil {
 			slog.Error("llm health check failed", "error", err)
 			os.Exit(1)
+		}
+	}
+
+	// Initialize Backup LLM (Optional)
+	var backupLLM llm.Client
+	if cfg.BackupLLM != nil {
+		backupLLM = client.NewLLMFromConfig(cfg.BackupLLM.Endpoint, cfg.BackupLLM.APIKey, cfg.BackupLLM.Model, cfg.BackupLLM.Timeout)
+		if checker, ok := backupLLM.(interface{ Ping(context.Context) error }); ok {
+			if err := checker.Ping(context.Background()); err != nil {
+				slog.Warn("backup llm health check failed, disabling backup strategy", "error", err)
+				backupLLM = nil
+			} else {
+				slog.Info("backup llm initialized", "model", cfg.BackupLLM.Model)
+			}
 		}
 	}
 
@@ -81,7 +97,7 @@ func main() {
 	promptLoader.SetRawSchemaProvider(mcpClient)
 
 	// Initialize PR review agent using Pipeline Adapter
-	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, llm, promptLoader)
+	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, primaryLLM, promptLoader)
 	slog.Info("reviewer initialized", "backend", prReviewer.Name())
 
 	// Initialize storage
@@ -121,10 +137,16 @@ func main() {
 	// Or define PromptLoader in domain.
 
 	// Temporarily: use pipeline.PromptLoader and changing PayloadParser signature is best.
-	payloadParser := webhook.NewPayloadParser(cfg.Webhook, llm, promptLoader, bbPayloadFilter)
+	payloadParser := webhook.NewPayloadParser(cfg.Webhook, primaryLLM, promptLoader, bbPayloadFilter)
+
+	// Initialize Backup Handler
+	var backupHandler func(context.Context, *domain.ReviewRequest, int) error
+	if backupLLM != nil {
+		backupHandler = prProcessor.CreateBackupHandler(mcpClient, promptLoader, backupLLM)
+	}
 
 	// Initialize webhook handler
-	webhookHandler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, payloadParser)
+	webhookHandler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, payloadParser, backupHandler)
 
 	// Setup HTTP server
 	mux := http.NewServeMux()

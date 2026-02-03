@@ -19,6 +19,7 @@ import (
 
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
+	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/filter/bitbucket"
 	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/processor"
@@ -171,6 +172,7 @@ func TestE2E_Main(t *testing.T) {
 					mu.Lock()
 					file := currentFile
 					comment := fmt.Sprintf("Path: %v | LineType: %v | Comment: %v", params.Arguments["filePath"], params.Arguments["lineType"], params.Arguments["commentText"])
+					fmt.Printf("\n[MOCK] Writing Comment to %s: %s\n", file, comment)
 					capturedData[file] = append(capturedData[file], comment)
 					mu.Unlock()
 
@@ -192,7 +194,7 @@ func TestE2E_Main(t *testing.T) {
 	defer mcpClient.Close()
 
 	// 5. Setup Pipeline Components (Shared)
-	llm, err := client.NewLLM(cfg)
+	primaryLLM, err := client.NewLLM(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create LLM: %v", err)
 	}
@@ -201,13 +203,20 @@ func TestE2E_Main(t *testing.T) {
 
 	// Create Reviewer & Processor
 	taskTracker := internal_sync.NewTracker()
-	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, llm, promptLoader)
+	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, primaryLLM, promptLoader)
 	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, nil, taskTracker)
+
+	// Initialize Backup Handler
+	var backupHandler func(context.Context, *domain.ReviewRequest, int) error
+	if cfg.BackupLLM != nil {
+		backupLLM := client.NewLLMFromConfig(cfg.BackupLLM.Endpoint, cfg.BackupLLM.APIKey, cfg.BackupLLM.Model, cfg.BackupLLM.Timeout)
+		backupHandler = prProcessor.CreateBackupHandler(mcpClient, promptLoader, backupLLM)
+	}
 
 	// Initialize Handler ONCE (Simulating a long-running server)
 	bbFilter := bitbucket.NewPayloadFilter()
-	parser := webhook.NewPayloadParser(cfg.Webhook, llm, promptLoader, bbFilter)
-	handler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, parser)
+	parser := webhook.NewPayloadParser(cfg.Webhook, primaryLLM, promptLoader, bbFilter)
+	handler := webhook.NewBitbucketWebhookHandler(cfg, prProcessor, parser, backupHandler)
 
 	// 6. Test Loop
 	reqDir := "requests"
@@ -262,7 +271,9 @@ func TestE2E_Main(t *testing.T) {
 
 	// 7. Wait for ALL processing to complete
 	// This stops the worker pool, which waits for all active and queued jobs to finish.
-	t.Log("All requests sent. Waiting for worker pool to drain...")
+	t.Log("All requests sent. Waiting for retries and backup LLM (approx 20s)...")
+	time.Sleep(20 * time.Second)
+	t.Log("Waiting for worker pool to drain...")
 	handler.WaitForCompletion()
 	t.Log("Waiting for background tasks...")
 	taskTracker.Wait()

@@ -74,6 +74,13 @@ type Config struct {
 		Timeout  time.Duration `yaml:"timeout"`
 	} `yaml:"llm"`
 
+	BackupLLM *struct {
+		Model    string        `yaml:"model"`
+		Endpoint string        `yaml:"endpoint"`
+		APIKey   string        `yaml:"-"` // From Env
+		Timeout  time.Duration `yaml:"timeout"`
+	} `yaml:"backup_llm"`
+
 	MCP struct {
 		Timeout time.Duration `yaml:"timeout"`
 		Retry   struct {
@@ -249,6 +256,9 @@ func LoadConfig() *Config {
 
 	// Always supplement/override with environment variables for secrets and critical items
 	cfg.LLM.APIKey = getEnv("LLM_API_KEY", cfg.LLM.APIKey)
+	if cfg.BackupLLM != nil {
+		cfg.BackupLLM.APIKey = getEnv("BACKUP_LLM_API_KEY", cfg.BackupLLM.APIKey)
+	}
 	cfg.Server.WebhookSecret = getEnv("WEBHOOK_SECRET", cfg.Server.WebhookSecret)
 
 	cfg.MCP.Bitbucket.Token = getEnv("BITBUCKET_MCP_TOKEN", cfg.MCP.Bitbucket.Token)
