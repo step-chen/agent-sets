@@ -26,6 +26,11 @@ llm:
   model: qwen3-coder            # LLM model name
   endpoint: http://localhost:8081/v1 # LLM API endpoint (OpenAI compatible)
   timeout: 300s                 # LLM request timeout
+  
+backup_llm:
+  model: deepseek-coder         # Backup LLM model
+  endpoint: https://api.deepseek.com/v1
+  timeout: 300s                 # Backup LLM timeout
 
 mcp:
   retry:
@@ -70,6 +75,7 @@ mcp:
 
 webhook:
   max_retries: 3                # Max retries for webhook processing failures
+  retry_degrade: true           # Enable progressive degradation on retry (Stage 2 -> Stage 3 Diff Only)
 
 prompts:
   dir: prompts                  # Directory for prompt template files
@@ -82,15 +88,19 @@ pipeline:
 
   stage2_context:               # Stage 2: Context enrichment config
     max_extra_files: 5          # Max extra files to include
+    max_total_size_kb: 200      # Max total size of extra files (KB)
     max_file_size: 50000        # Max file size to read (bytes)
 
   stage3_review:                # Stage 3: Code review config
     temperature: 0.1            # LLM temperature
     max_context_tokens: 81920   # Max context token limit
+    proactive_compression: true # Proactively compress context if token limit is reached
     degradation:                # Degradation strategy (when context limit exceeded)
       l1_context_lines: 50      # L1: Context lines to keep around changes
       l2_chunk_by_file: true    # L2: Chunk processing by file
       l3_diff_only: true        # L3: Fallback to diff only (skip reading full file)
+      l2_max_failure_ratio: 0.5 # Max failure ratio for L2 chunking
+      l2_fail_fast: false       # If true, stop L2 processing on first error
 
   comment_merge:                # Comment merge strategy
     enabled: true               # Enable comment merging
