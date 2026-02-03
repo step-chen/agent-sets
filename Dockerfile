@@ -28,9 +28,9 @@ COPY . .
 RUN go test ./... -v
 
 # Build the application
-# CGO_ENABLED=0 for static binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-s -w -extldflags '-static'" \
+# CGO_ENABLED=1 required for go-tree-sitter
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-s -w" \
     -o /app/pr-review-server \
     ./cmd/server
 
