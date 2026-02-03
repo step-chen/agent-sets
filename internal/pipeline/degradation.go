@@ -12,17 +12,19 @@ import (
 
 // DegradationManager handles token limit degradation strategies
 type DegradationManager struct {
-	cfg           config.DegradationConfig
-	maxTokens     int
-	chunkReviewer *ChunkReviewer
+	cfg            config.DegradationConfig
+	maxTokens      int
+	chunkReviewer  *ChunkReviewer
+	contextReducer *ContextReducer
 }
 
 // NewDegradationManager creates a new DegradationManager
 func NewDegradationManager(cfg config.DegradationConfig, maxTokens int, chunkReviewer *ChunkReviewer) *DegradationManager {
 	return &DegradationManager{
-		cfg:           cfg,
-		maxTokens:     maxTokens,
-		chunkReviewer: chunkReviewer,
+		cfg:            cfg,
+		maxTokens:      maxTokens,
+		chunkReviewer:  chunkReviewer,
+		contextReducer: NewContextReducer(),
 	}
 }
 
@@ -65,7 +67,32 @@ func (dm *DegradationManager) ApplyStrategy(
 		"limit", dm.maxTokens,
 		"base", baseTokens,
 		"diff", diffTokens,
-		"context", contextTokens)
+		"context", contextTokens,
+		"degrade_hint", req.DegradeHint)
+
+	// Force degradation based on external hint (from WorkerPool retries)
+	if req.DegradeHint >= 2 {
+		slog.Warn("Forcing L3 degradation (Diff Only) based on DegradeHint")
+		return reviewFunc(ctx, req, changes, []FileContent{})
+	}
+
+	if req.DegradeHint == 1 {
+		slog.Warn("Forcing L1 degradation (Context Truncation) based on DegradeHint")
+		// Apply L1 Truncation and proceed
+		// For forced L1, we assume we want to fit in MaxTokens or just aggressive reduction?
+		// Stick to fitting in MaxTokens.
+		// FORCE REDUCTION: If we are here, standard limits might have failed (timeout).
+		// We cut the context budget in half to ensure significantly smaller payload.
+		available := dm.maxTokens - baseTokens - diffTokens
+		contextBudget := available / 2
+		if contextBudget < 0 {
+			contextBudget = 0
+		}
+
+		reducedContext := dm.applyContextReduction(contextFiles, contextBudget)
+		slog.Info("L1 degradation applied (forced)", "original_files", len(contextFiles), "reduced_files", len(reducedContext))
+		return reviewFunc(ctx, req, changes, reducedContext)
+	}
 
 	// Thresholds
 	threshold80 := int(float64(dm.maxTokens) * 0.8)
@@ -93,7 +120,14 @@ func (dm *DegradationManager) ApplyStrategy(
 	// Actually, if we are > 80%, we should try L1 first.
 	if totalTokens <= int(float64(dm.maxTokens)*1.2) {
 		slog.Warn("Token limit warning (>80%), applying L1 degradation (Context Truncation)")
-		reducedContext := dm.applyL1Truncation(contextFiles)
+
+		contextBudget := dm.maxTokens - baseTokens - diffTokens
+		// Ensure non-negative (though diffTokens usually small compared to context, technically could exceed)
+		if contextBudget < 0 {
+			contextBudget = 0
+		}
+
+		reducedContext := dm.applyContextReduction(contextFiles, contextBudget)
 
 		// Re-estimate
 		newContextTokens := 0
@@ -129,41 +163,9 @@ func (dm *DegradationManager) ApplyStrategy(
 // applyL1Truncation filters context to only include lines around changes
 // This is a simplified version; in reality, we'd need to parse the diff and map lines.
 // For now, we'll do a simpler heuristic: Max N lines per file.
-func (dm *DegradationManager) applyL1Truncation(contextFiles []FileContent) []FileContent {
-	var reduced []FileContent
-	// Map changes by path for quick lookup
-	// changesMap := make(map[string]FileChange)
-	// for _, c := range changes {
-	// 	changesMap[c.Path] = c
-	// }
-
-	// For P0, we implement a simple "head/tail" or "max lines" truncation for context files.
-	// Since mapping diff lines to context lines precisely requires parsing the patch again,
-	// we will limit each context file to the first N lines plus last M lines or just first N lines.
-	// Let's implement specific "Context Lines" from config if we can.
-	// Since we don't have the logic to extract "relevant" lines easily here without code complexity,
-	// we will simply truncate large context files to a fixed size limit (e.g., 200 lines).
-
-	limit := dm.cfg.L1ContextLines * 2 // Heuristic: 2 * context lines ~ 100 lines total? No, L1ContextLines is "around changes".
-	if limit < 100 {
-		limit = 100
-	}
-
-	for _, cf := range contextFiles {
-		lines := strings.Split(cf.Content, "\n")
-		if len(lines) > limit {
-			// Keep first K lines
-			truncated := strings.Join(lines[:limit], "\n")
-			truncated += fmt.Sprintf("\n... (truncated %d lines) ...", len(lines)-limit)
-			reduced = append(reduced, FileContent{
-				Path:    cf.Path,
-				Content: truncated,
-			})
-		} else {
-			reduced = append(reduced, cf)
-		}
-	}
-	return reduced
+// applyContextReduction uses ContextReducer to fit context into budget
+func (dm *DegradationManager) applyContextReduction(contextFiles []FileContent, budget int) []FileContent {
+	return dm.contextReducer.Reduce(contextFiles, budget)
 }
 
 func isTimeoutError(err error) bool {

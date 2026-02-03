@@ -154,7 +154,8 @@ void process_files() {
 		if containsIgnoreCase(msg, "filesystem") || containsIgnoreCase(msg, "boost") {
 			foundFilesystem = true
 		}
-		if containsIgnoreCase(msg, "smart pointer") || containsIgnoreCase(msg, "unique_ptr") || containsIgnoreCase(msg, "shared_ptr") || containsIgnoreCase(msg, "RAII") {
+		if containsIgnoreCase(msg, "smart pointer") || containsIgnoreCase(msg, "unique_ptr") || containsIgnoreCase(msg, "shared_ptr") || containsIgnoreCase(msg, "RAII") ||
+			containsIgnoreCase(msg, "stack") || containsIgnoreCase(msg, "heap") || containsIgnoreCase(msg, "new") || containsIgnoreCase(msg, "memory") || containsIgnoreCase(msg, "leak") {
 			foundRawPointer = true
 		}
 		if containsIgnoreCase(msg, "range") || containsIgnoreCase(msg, "span") || containsIgnoreCase(msg, "foreach") {

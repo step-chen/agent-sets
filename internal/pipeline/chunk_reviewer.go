@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 
+	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 )
 
@@ -15,12 +16,14 @@ type ReviewFunc func(ctx context.Context, req ReviewRequest, changes []FileChang
 // ChunkReviewer handles the logic for splitting a large review into smaller chunks by file
 type ChunkReviewer struct {
 	maxTokens int
+	cfg       config.DegradationConfig
 }
 
 // NewChunkReviewer creates a new ChunkReviewer
-func NewChunkReviewer(maxTokens int) *ChunkReviewer {
+func NewChunkReviewer(maxTokens int, cfg config.DegradationConfig) *ChunkReviewer {
 	return &ChunkReviewer{
 		maxTokens: maxTokens,
+		cfg:       cfg,
 	}
 }
 
@@ -131,6 +134,9 @@ func (cr *ChunkReviewer) ReviewChunked(
 	var aggregatedResult domain.ReviewResult
 	aggregatedResult.Summary = "## Chunked Review Summary\n\n"
 
+	var successCount, failureCount int
+	var firstError error
+
 	for i, chunk := range chunks {
 		slog.Info("Processing Chunk", "index", i+1, "total", len(chunks), "files", len(chunk))
 
@@ -148,19 +154,43 @@ func (cr *ChunkReviewer) ReviewChunked(
 
 		res, err := reviewFunc(ctx, req, chunkChanges, chunkContext)
 		if err != nil {
+			failureCount++
+			if firstError == nil {
+				firstError = err
+			}
 			slog.Error("Failed to review chunk", "index", i+1, "error", err)
 			aggregatedResult.Summary += fmt.Sprintf("- **Chunk %d Failed**: %v\n", i+1, err)
+
+			if cr.cfg.L2FailFast {
+				return nil, fmt.Errorf("chunk %d failed (fail-fast enabled): %w", i+1, err)
+			}
 			continue
 		}
 
+		successCount++
 		// Merge Results
 		aggregatedResult.Comments = append(aggregatedResult.Comments, res.Comments...)
 		aggregatedResult.Score += res.Score // We need to average this later
 		aggregatedResult.Summary += fmt.Sprintf("### Chunk %d\n%s\n\n", i+1, res.Summary)
 	}
 
-	if len(chunks) > 0 {
-		aggregatedResult.Score /= len(chunks)
+	// Check failure ratio
+	totalChunks := successCount + failureCount
+	if totalChunks > 0 {
+		failureRatio := float64(failureCount) / float64(totalChunks)
+		if failureRatio > cr.cfg.L2MaxFailureRatio {
+			return nil, fmt.Errorf("chunk failure ratio %.2f exceeds threshold %.2f: %w", failureRatio, cr.cfg.L2MaxFailureRatio, firstError)
+		}
+	}
+
+	// All failed?
+	if successCount == 0 && failureCount > 0 {
+		return nil, fmt.Errorf("all %d chunks failed: %w", failureCount, firstError)
+	}
+
+	// Calculate average score based on SUCCESSFUL chunks only
+	if successCount > 0 {
+		aggregatedResult.Score /= successCount
 	}
 
 	return &aggregatedResult, nil

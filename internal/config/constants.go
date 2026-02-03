@@ -1,12 +1,5 @@
 package config
 
-// Backend types
-const (
-	BackendADK       = "adk"
-	BackendLangChain = "langchain"
-	BackendDirect    = "direct"
-)
-
 // Diff processing markers
 const (
 	MarkerTruncated  = "\n\n[... TRUNCATED FOR TOKEN LIMIT ...]"

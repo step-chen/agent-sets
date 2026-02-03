@@ -7,8 +7,8 @@ This directory contains the End-to-End (E2E) test suite for the PR Review Automa
 ```text
 test/e2e/
 ├── requests/           # Webhook Payloads (JSON)
-│   ├── 01_pr.json
-│   └── 02_chunked.json
+│   ├── 01_pr_opened.json
+│   └── 02_chunked_review.json
 ├── config.test.yaml    # E2E-specific configuration
 ├── .env                # E2E-specific environment variables (API Keys, etc.)
 ├── README.md           # This document

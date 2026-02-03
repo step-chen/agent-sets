@@ -29,7 +29,7 @@ type Stage3 struct {
 
 // NewStage3 creates a new Stage3 instance
 func NewStage3(cfg *config.PipelineConfig, mcpClient *client.MCPClient, llm LLMClient, promptLoader *PromptLoader) *Stage3 {
-	chunkReviewer := NewChunkReviewer(cfg.Stage3Review.MaxContextTokens)
+	chunkReviewer := NewChunkReviewer(cfg.Stage3Review.MaxContextTokens, cfg.Stage3Review.Degradation)
 	dm := NewDegradationManager(cfg.Stage3Review.Degradation, cfg.Stage3Review.MaxContextTokens, chunkReviewer)
 
 	return &Stage3{

@@ -30,21 +30,14 @@ agent-sets/
 │   └── server/
 │       └── main.go              # 服务入口点
 ├── internal/
-│   ├── agent/
-│   │   └── pr_review_agent.go   # ADK-Go PR 审查代理核心
-│   ├── client/
-│   │   ├── mcp.go               # MCP 客户端 (Bitbucket/Jira/Confluence)
-│   │   └── mcp_test.go          # MCP 客户端测试
-│   ├── config/
-│   │   ├── config.go            # 环境变量配置加载
-│   │   └── config_test.go       # 配置测试
-│   ├── processor/
-│   │   └── pr_processor.go      # PR 处理业务逻辑 + 评论回写
-│   └── webhook/
-│       ├── bitbucket.go         # Bitbucket Webhook 处理器
-│       └── bitbucket_test.go    # Webhook 测试
+│   ├── client/              # MCP 与 LLM 客户端适配器
+│   ├── pipeline/            # 审查阶段 (Diff, Context, Review)
+│   ├── processor/           # 业务编排与评论回写
+│   ├── storage/             # SQLite 存储（历史与指标）
+│   └── webhook/             # Bitbucket Webhook 处理器
+├── prompts/                 # 提示词模板与规则集
+├── test/e2e/                # 端到端测试套件
 ├── go.mod
-├── go.sum
 └── README.md
 ```
 
@@ -292,13 +285,12 @@ mcp:
 
 ## 待完善功能
 
-| 功能         | 状态      | 说明                       |
-| ------------ | --------- | -------------------------- |
-| 持久化存储   | ✅ 已完成 | 审查历史和指标存储         |
-| PostgreSQL   | 未实现    | 生产级数据库支持           |
-| 历史记录 API | 未实现    | 查询审查记录的 HTTP 接口   |
-| 管理后台     | 未实现    | 审查数据与指标的可视化看板 |
-| 更多审查算法 | 未实现    | 可扩展的审查规则           |
+| 功能         | 状态   | 说明                       |
+| ------------ | ------ | -------------------------- |
+| PostgreSQL   | 未实现 | 生产级数据库支持           |
+| 历史记录 API | 未实现 | 查询审查记录的 HTTP 接口   |
+| 管理后台     | 未实现 | 审查数据与指标的可视化看板 |
+| 更多审查算法 | 未实现 | 可扩展的审查规则           |
 
 ---
 

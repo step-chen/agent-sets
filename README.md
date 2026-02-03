@@ -30,21 +30,14 @@ agent-sets/
 │   └── server/
 │       └── main.go              # Service entry point
 ├── internal/
-│   ├── agent/
-│   │   └── pr_review_agent.go   # ADK-Go PR Review Agent Core
-│   ├── client/
-│   │   ├── mcp.go               # MCP Client (Bitbucket/Jira/Confluence)
-│   │   └── mcp_test.go          # MCP Client Tests
-│   ├── config/
-│   │   ├── config.go            # Environment variable configuration loading
-│   │   └── config_test.go       # Config tests
-│   ├── processor/
-│   │   └── pr_processor.go      # PR processing business logic + comment write-back
-│   └── webhook/
-│       ├── bitbucket.go         # Bitbucket Webhook Handler
-│       └── bitbucket_test.go    # Webhook Tests
+│   ├── client/              # MCP & LLM client adapters
+│   ├── pipeline/            # Review stages (Diff, Context, Review)
+│   ├── processor/           # Orchestration & Comment write-back
+│   ├── storage/             # SQLite storage for history & metrics
+│   └── webhook/             # Bitbucket Webhook handler
+├── prompts/                 # Prompt templates & rule sets
+├── test/e2e/                # End-to-end test suite
 ├── go.mod
-├── go.sum
 └── README.md
 ```
 
@@ -284,21 +277,19 @@ Handles Webhook events from Bitbucket Data Center:
 7. ✅ **Graceful Shutdown**: Supports signal-triggered graceful shutdown.
 8. ✅ **Persistent Storage**: Saves review history and metrics to SQLite.
 9. ✅ **Smart Deduplication**: Native Bitbucket deduplication prevents redundant comments across commits.
-10. ✅ **Smart Deduplication**: Native Bitbucket deduplication prevents redundant comments across commits.
-11. ✅ **Hybrid Commenting Mode**: Posts high-severity issues as individual inline comments (for precise line anchoring) while merging low-severity suggestions into a summary table (to reduce noise).
-12. ✅ **Reliability**: Comprehensive timeouts (shutdown, LLM, MCP), concurrency control, and circuit breakers for external dependencies.
+10. ✅ **Hybrid Commenting Mode**: Posts high-severity issues as individual inline comments (for precise line anchoring) while merging low-severity suggestions into a summary table (to reduce noise).
+11. ✅ **Reliability**: Comprehensive timeouts (shutdown, LLM, MCP), concurrency control, and circuit breakers for external dependencies.
 
 ---
 
 ## Pending Features
 
-| Feature                | Status    | Description                            |
-| ---------------------- | --------- | -------------------------------------- |
-| Persistent Storage     | ✅ Done   | Storage for review history and metrics |
-| PostgreSQL Support     | Not Impl. | Production-grade database support      |
-| Review History API     | Not Impl. | HTTP functionality to query reviews    |
-| Admin Dashboard        | Not Impl. | Web UI for metrics and history         |
-| More Review Algorithms | Not Impl. | Extensible review rules                |
+| Feature                | Status    | Description                         |
+| ---------------------- | --------- | ----------------------------------- |
+| PostgreSQL Support     | Not Impl. | Production-grade database support   |
+| Review History API     | Not Impl. | HTTP functionality to query reviews |
+| Admin Dashboard        | Not Impl. | Web UI for metrics and history      |
+| More Review Algorithms | Not Impl. | Extensible review rules             |
 
 ---
 

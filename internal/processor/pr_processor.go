@@ -21,8 +21,9 @@ import (
 )
 
 // Processor defines the interface for processing pull requests
+// Processor defines the interface for processing pull requests
 type Processor interface {
-	ProcessPullRequest(ctx context.Context, pr *domain.PullRequest) error
+	ProcessPullRequest(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error
 }
 
 // Reviewer defines the interface for reviewing pull requests
@@ -56,7 +57,7 @@ func NewPRProcessor(cfg *config.Config, reviewer Reviewer, commenter Commenter, 
 }
 
 // ProcessPullRequest processes a pull request
-func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullRequest) error {
+func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error {
 	start := time.Now()
 	slog.Debug("process pr", "id", pr.ID, "repo", pr.RepoSlug, "title", pr.Title)
 	slog.Info("processing pr", "id", pr.ID)
@@ -98,6 +99,7 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullReq
 	req := &domain.ReviewRequest{
 		PR:                 pr,
 		HistoricalComments: existingComments,
+		DegradeHint:        degradeLevel,
 	}
 
 	// 4. Review PR (Main Critical Path)

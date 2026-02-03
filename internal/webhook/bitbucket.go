@@ -46,9 +46,9 @@ func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Proces
 		workerCount = 1
 	}
 
-	wp := NewWorkerPool[Job](workerCount, queueSize, cfg.Webhook.MaxRetries, cfg.Server.ShutdownTimeout)
-	wp.Start(func(ctx context.Context, job Job) error {
-		return job(ctx)
+	wp := NewWorkerPool[Job](workerCount, queueSize, cfg.Webhook.MaxRetries, cfg.Webhook.RetryDegrade, cfg.Server.ShutdownTimeout)
+	wp.Start(func(ctx context.Context, job Job, degradeLevel int) error {
+		return job(ctx, degradeLevel)
 	})
 
 	// Initialize Debouncer
@@ -184,7 +184,7 @@ func (h *BitbucketWebhookHandler) submitJob(uniqueKey string) {
 	payload := val.([]byte)
 
 	// 2. Submit to WorkerPool
-	err := h.workerPool.Submit(func(ctx context.Context) error {
+	err := h.workerPool.Submit(func(ctx context.Context, degradeLevel int) error {
 		// Acquire PR-level Lock to ensure serial processing for this PR
 		// This protects against multiple workers picking up different debounced events for same PR (rare but possible)
 		h.keyLock.Lock(uniqueKey)
@@ -217,7 +217,7 @@ func (h *BitbucketWebhookHandler) submitJob(uniqueKey string) {
 		}
 
 		slog.Info("processing pr", "pr_id", pr.ID, "repo", pr.RepoSlug)
-		if err := h.prProcessor.ProcessPullRequest(procCtx, pr); err != nil {
+		if err := h.prProcessor.ProcessPullRequest(procCtx, pr, degradeLevel); err != nil {
 			slog.Error("process pr failed", "error", err, "pr_id", pr.ID)
 			return err
 		}

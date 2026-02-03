@@ -7,6 +7,7 @@ import (
 
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
+	codecontext "pr-review-automation/internal/context"
 	"pr-review-automation/internal/domain"
 )
 
@@ -23,9 +24,15 @@ func NewPipelineAdapter(cfg *config.Config, mcpClient *client.MCPClient, llm LLM
 		llmClient: llm,
 	}
 
+	// Initialize Context Engine
+	ctxEngine := codecontext.NewContextEngine()
+
+	// Initialize FileCache
+	fileCache := NewFileCache()
+
 	// Initialize stages
-	p.stage1 = NewStage1(&cfg.Pipeline, mcpClient, llm, promptLoader)
-	p.stage2 = NewStage2(&cfg.Pipeline, mcpClient, llm, promptLoader)
+	p.stage1 = NewStage1(&cfg.Pipeline, mcpClient, llm, promptLoader, fileCache)
+	p.stage2 = NewStage2(&cfg.Pipeline, mcpClient, llm, promptLoader, ctxEngine, fileCache)
 	p.stage3 = NewStage3(&cfg.Pipeline, mcpClient, llm, promptLoader)
 
 	return &PipelineAdapter{
@@ -40,6 +47,7 @@ func (pa *PipelineAdapter) ReviewPR(ctx context.Context, req *domain.ReviewReque
 	pipelineReq := ReviewRequest{
 		PR:           *req.PR,
 		LatestCommit: req.PR.LatestCommit,
+		DegradeHint:  req.DegradeHint,
 	}
 
 	// 1. Stage 1: Diff Extraction

@@ -9,8 +9,8 @@
 ```text
 test/e2e/
 ├── requests/           # 存放 Webhook Payload (JSON)
-│   ├── 01_pr.json
-│   └── 02_chunked.json
+│   ├── 01_pr_opened.json
+│   └── 02_chunked_review.json
 ├── config.test.yaml    # E2E 专用配置文件
 ├── .env                # E2E 专用环境变量 (API Key 等)
 ├── README.md           # 英文文档

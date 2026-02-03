@@ -22,15 +22,17 @@ import (
 
 // MockProcessor implements processor.Processor for testing
 type MockProcessor struct {
-	ProcessFunc func(ctx context.Context, pr *domain.PullRequest) error
+	ProcessFunc func(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error
 }
 
-func (m *MockProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullRequest) error {
+func (m *MockProcessor) ProcessPullRequest(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error {
 	if m.ProcessFunc != nil {
-		return m.ProcessFunc(ctx, pr)
+		return m.ProcessFunc(ctx, pr, degradeLevel)
 	}
 	return nil
 }
+
+// ... existing code ...
 
 // MockLLM implements llm.Client for testing
 type MockLLM struct {
@@ -157,7 +159,7 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L1(t *testing.T) {
 
 	processed := make(chan *domain.PullRequest, 1)
 	mockProc := &MockProcessor{
-		ProcessFunc: func(ctx context.Context, pr *domain.PullRequest) error {
+		ProcessFunc: func(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error {
 			processed <- pr
 			return nil
 		},
@@ -229,7 +231,7 @@ func TestBitbucketWebhookHandler_PROpenedEvent_L2(t *testing.T) {
 
 	processed := make(chan *domain.PullRequest, 1)
 	mockProc := &MockProcessor{
-		ProcessFunc: func(ctx context.Context, pr *domain.PullRequest) error {
+		ProcessFunc: func(ctx context.Context, pr *domain.PullRequest, degradeLevel int) error {
 			processed <- pr
 			return nil
 		},

@@ -89,6 +89,7 @@ func (c *ReviewComment) IsHighSeverity() bool {
 type ReviewRequest struct {
 	PR                 *PullRequest
 	HistoricalComments []ReviewComment
+	DegradeHint        int // 0=None, 1=Truncate, 2=Drop
 }
 
 // ReviewResult represents the outcome of a review

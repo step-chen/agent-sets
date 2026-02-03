@@ -108,7 +108,7 @@ index 123..456 100644
 	}
 
 	// Execute
-	err := p.ProcessPullRequest(context.Background(), pr)
+	err := p.ProcessPullRequest(context.Background(), pr, 0)
 
 	// Verify
 	if err != nil {
@@ -132,7 +132,7 @@ func TestPRProcessor_ProcessPullRequest_ReviewFail(t *testing.T) {
 	tracker := internal_sync.NewTracker()
 	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil, tracker)
 
-	err := p.ProcessPullRequest(context.Background(), &domain.PullRequest{ID: "123"})
+	err := p.ProcessPullRequest(context.Background(), &domain.PullRequest{ID: "123"}, 0)
 	if err == nil {
 		t.Error("Expected error, got nil")
 	}
@@ -183,7 +183,7 @@ func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
 	p := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
 	pr := &domain.PullRequest{ID: "123", ProjectKey: "PROJ", RepoSlug: "repo"}
 
-	p.ProcessPullRequest(context.Background(), pr)
+	p.ProcessPullRequest(context.Background(), pr, 0)
 
 	if strings.Contains(postedSummary, "# Bad Header") {
 		t.Errorf("Summary should not contain headers. Got: %s", postedSummary)

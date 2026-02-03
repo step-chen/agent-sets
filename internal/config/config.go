@@ -18,7 +18,8 @@ const (
 
 // WebhookConfig holds configuration for webhook processing
 type WebhookConfig struct {
-	MaxRetries int `yaml:"max_retries"` // Max Retries for L2 extraction (default: 2)
+	MaxRetries   int  `yaml:"max_retries"`   // Max Retries for L2 extraction (default: 2)
+	RetryDegrade bool `yaml:"retry_degrade"` // Enable progressive degradation on retry
 }
 
 // MCPServerConfig holds configuration for a single MCP server
@@ -131,20 +132,24 @@ type Stage1Config struct {
 type Stage2Config struct {
 	PromptTemplate string `yaml:"prompt_template"`
 	MaxExtraFiles  int    `yaml:"max_extra_files"`
+	MaxTotalSizeKB int    `yaml:"max_total_size_kb"`
 	MaxFileSize    int    `yaml:"max_file_size"`
 }
 
 type Stage3Config struct {
-	PromptTemplate   string            `yaml:"prompt_template"`
-	Temperature      float64           `yaml:"temperature"`
-	MaxContextTokens int               `yaml:"max_context_tokens"`
-	Degradation      DegradationConfig `yaml:"degradation"`
+	PromptTemplate       string            `yaml:"prompt_template"`
+	Temperature          float64           `yaml:"temperature"`
+	MaxContextTokens     int               `yaml:"max_context_tokens"`
+	ProactiveCompression bool              `yaml:"proactive_compression"`
+	Degradation          DegradationConfig `yaml:"degradation"`
 }
 
 type DegradationConfig struct {
-	L1ContextLines int  `yaml:"l1_context_lines"` // L1: Lines of context to keep around changes (default: 50)
-	L2ChunkByFile  bool `yaml:"l2_chunk_by_file"` // L2: Enable chunking by file (default: true)
-	L3DiffOnly     bool `yaml:"l3_diff_only"`     // L3: Fallback to diff only (default: true)
+	L1ContextLines    int     `yaml:"l1_context_lines"` // L1: Lines of context to keep around changes (default: 50)
+	L2ChunkByFile     bool    `yaml:"l2_chunk_by_file"` // L2: Enable chunking by file (default: true)
+	L3DiffOnly        bool    `yaml:"l3_diff_only"`     // L3: Fallback to diff only (default: true)
+	L2MaxFailureRatio float64 `yaml:"l2_max_failure_ratio"`
+	L2FailFast        bool    `yaml:"l2_fail_fast"`
 }
 
 // GetLogLevel returns the slog.Level based on Log.Level string
@@ -188,6 +193,7 @@ func LoadConfig() *Config {
 	cfg.MCP.CircuitBreaker.OpenDuration = 30 * time.Second
 	cfg.Prompts.Dir = "prompts"
 	cfg.Webhook.MaxRetries = 2
+	cfg.Webhook.RetryDegrade = true
 
 	// Pipeline defaults
 	cfg.Pipeline.Enabled = true
@@ -196,14 +202,21 @@ func LoadConfig() *Config {
 	cfg.Pipeline.ResponseMaxStringLen = 100000 // Default limit
 	cfg.Pipeline.Stage1Diff.PromptTemplate = "pipeline/stage1.md"
 	cfg.Pipeline.Stage2Context.PromptTemplate = "pipeline/stage2.md"
+	cfg.Pipeline.Stage2Context.PromptTemplate = "pipeline/stage2.md"
 	cfg.Pipeline.Stage2Context.MaxExtraFiles = 5
+	cfg.Pipeline.Stage2Context.MaxTotalSizeKB = 200 // Default 200KB
 	cfg.Pipeline.Stage2Context.MaxFileSize = 50000
 	cfg.Pipeline.Stage3Review.PromptTemplate = "pipeline/stage3.md"
 	cfg.Pipeline.Stage3Review.Temperature = 0.0
 	cfg.Pipeline.Stage3Review.MaxContextTokens = 256000
+	cfg.Pipeline.Stage3Review.Temperature = 0.0
+	cfg.Pipeline.Stage3Review.MaxContextTokens = 256000
+	cfg.Pipeline.Stage3Review.ProactiveCompression = true // Default enabled
 	cfg.Pipeline.Stage3Review.Degradation.L1ContextLines = 50
 	cfg.Pipeline.Stage3Review.Degradation.L2ChunkByFile = true
 	cfg.Pipeline.Stage3Review.Degradation.L3DiffOnly = true
+	cfg.Pipeline.Stage3Review.Degradation.L2MaxFailureRatio = 0.5
+	cfg.Pipeline.Stage3Review.Degradation.L2FailFast = false
 	cfg.Pipeline.CommentMerge.Enabled = true
 	cfg.Pipeline.CommentMerge.HighSeverityMerge = "by_file"
 	cfg.Pipeline.CommentMerge.LowSeverityMerge = "to_summary"

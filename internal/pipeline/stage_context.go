@@ -7,24 +7,29 @@ import (
 
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
+	codecontext "pr-review-automation/internal/context"
 	"pr-review-automation/internal/domain"
 )
 
 // Stage2 implements the Context Collection stage
 type Stage2 struct {
-	cfg          *config.PipelineConfig
-	mcpClient    *client.MCPClient
-	llm          LLMClient
-	promptLoader *PromptLoader
+	cfg           *config.PipelineConfig
+	mcpClient     *client.MCPClient
+	llm           LLMClient
+	promptLoader  *PromptLoader
+	contextEngine *codecontext.ContextEngine
+	fileCache     *FileCache
 }
 
 // NewStage2 creates a new Stage2 instance
-func NewStage2(cfg *config.PipelineConfig, mcpClient *client.MCPClient, llm LLMClient, promptLoader *PromptLoader) *Stage2 {
+func NewStage2(cfg *config.PipelineConfig, mcpClient *client.MCPClient, llm LLMClient, promptLoader *PromptLoader, ctxEngine *codecontext.ContextEngine, fileCache *FileCache) *Stage2 {
 	return &Stage2{
-		cfg:          cfg,
-		mcpClient:    mcpClient,
-		llm:          llm,
-		promptLoader: promptLoader,
+		cfg:           cfg,
+		mcpClient:     mcpClient,
+		llm:           llm,
+		promptLoader:  promptLoader,
+		contextEngine: ctxEngine,
+		fileCache:     fileCache,
 	}
 }
 
@@ -33,51 +38,175 @@ func (s *Stage2) CollectContext(ctx context.Context, req ReviewRequest, changes 
 	slog.Info("Stage 2: Starting Context Collection", "files_changed", len(changes))
 
 	var collected []FileContent
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, 5) // Concurrency limit
+	knownPaths := make(map[string]bool) // L1: Deduplication Set
+
+	// 1. Process Diff Files (Base Context)
+	// We must fetch full content for diff files to perform analysis (and eventual compression)
+	var diffFiles []FileContent
+	var depsCandidates []string
 
 	for _, change := range changes {
-		// Skip deleted files
 		if change.ChangeType == "delete" {
 			continue
 		}
 
+		path := change.Path
+		knownPaths[path] = true // Mark as known
+
+		// L3: Fetch using Cache (or Network)
+		content, err := s.fileCache.GetOrFetch(ctx, path, func() (string, error) {
+			return s.fetchFileContent(ctx, req.PR, path, req.LatestCommit)
+		})
+
+		if err != nil {
+			slog.Warn("Failed to fetch diff file content", "path", path, "error", err)
+			continue
+		}
+
+		// Check size limit (per file)
+		if len(content) > s.cfg.Stage2Context.MaxFileSize {
+			slog.Info("Diff file too large for context analysis", "path", path, "size", len(content))
+			// We still keep it as a diff file, but maybe skip analysis?
+			// For now, consistent with legacy behavior: skip content if too big?
+			// Actually, if it's too big, we probably shouldn't pass it to Context Engine.
+			// But we DO want the Diff to be reviewed.
+			// However, `collected` is "Context Files".
+			// The `Review` stage takes `changes` (Diffs) AND `contextFiles`.
+			// `FileContent` here represents *additional context* or *full content of diffs*.
+			// If we return it here, it might be used for "ContextReducer".
+			// Let's stick to: Analyze valid files.
+		} else {
+			// Analyze
+			analysis, err := s.contextEngine.Analyze(ctx, path, []byte(content))
+			if err == nil {
+				// Collect valid dependencies
+				for _, d := range analysis.Dependencies {
+					depsCandidates = append(depsCandidates, d.Path)
+				}
+
+				diffFiles = append(diffFiles, FileContent{
+					Path:      path,
+					Content:   content,
+					IsDiffed:  true,
+					Relevance: "direct",
+					Analysis:  analysis,
+				})
+			} else {
+				slog.Warn("Context analysis failed", "path", path, "error", err)
+			}
+		}
+	}
+
+	// Add diff files to result
+	collected = append(collected, diffFiles...)
+
+	// 2. Process Dependencies (Extra Context)
+	// L2: Exclude files already in diff (checked via knownPaths)
+	uniqueDeps := make([]string, 0)
+	for _, depPath := range depsCandidates {
+		// Clean path just in case
+		// Note: depPath from tree-sitter might be relative or raw.
+		// For now assume raw paths or minimal normalization if needed.
+		// A real implementation would resolve paths relative to the source.
+		// We'll trust exact match for now.
+
+		if _, exists := knownPaths[depPath]; !exists {
+			knownPaths[depPath] = true
+			uniqueDeps = append(uniqueDeps, depPath)
+		}
+	}
+
+	slog.Info("Stage 2: Dependency Candidates found", "count", len(uniqueDeps))
+
+	// Limit number of extra files BEFORE fetching
+	limit := s.cfg.Stage2Context.MaxExtraFiles
+	if len(uniqueDeps) > limit {
+		slog.Info("Stage 2: Truncating dependencies", "total", len(uniqueDeps), "limit", limit)
+		uniqueDeps = uniqueDeps[:limit]
+	}
+
+	// Fetch Dependencies (concurrently)
+	var depFiles []FileContent
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, 5)
+
+	for _, depPath := range uniqueDeps {
 		wg.Add(1)
-		go func(c FileChange) {
+		go func(path string) {
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			content, err := s.fetchFileContent(ctx, req.PR, c.Path, req.LatestCommit)
+			content, err := s.fileCache.GetOrFetch(ctx, path, func() (string, error) {
+				return s.fetchFileContent(ctx, req.PR, path, req.LatestCommit)
+			})
+
 			if err != nil {
-				slog.Warn("failed to fetch file content", "path", c.Path, "error", err)
+				slog.Warn("Failed to fetch dependency", "path", path, "error", err)
 				return
 			}
 
-			// Check file size limit
 			if len(content) > s.cfg.Stage2Context.MaxFileSize {
-				slog.Info("file too large, skipping content", "path", c.Path, "size", len(content))
+				slog.Debug("Dependency too large", "path", path)
 				return
+			}
+
+			// Optional: analyze dependency too? For now, just add it.
+			// Getting analysis for dependency helps later stages but might be expensive.
+			// Let's analyze to get chunks (useful for reducer).
+			analysis, err := s.contextEngine.Analyze(ctx, path, []byte(content))
+			if err != nil {
+				slog.Warn("Dependency analysis failed", "path", path)
 			}
 
 			mu.Lock()
-			collected = append(collected, FileContent{
-				Path:      c.Path,
+			depFiles = append(depFiles, FileContent{
+				Path:      path,
 				Content:   content,
-				IsDiffed:  true,
-				Relevance: "direct",
+				IsDiffed:  false,
+				Relevance: "dependency",
+				Analysis:  analysis,
 			})
 			mu.Unlock()
-		}(change)
+		}(depPath)
 	}
-
 	wg.Wait()
 
-	// TODO: Future enhancement - Use LLM to identify and fetch related dependency files
-	// based on the changes (e.g. if a test is modified, fetch the implementation).
+	// 3. Global Size Limit Check (MaxTotalSizeKB)
+	// We prioritize Diff files (already added), then Dependencies.
+	// We might need to trim `depFiles` if we exceed total size.
+	// But `collected` already has diffFiles.
 
-	slog.Info("Stage 2: Completed", "files_collected", len(collected))
+	// Merge and check size
+	// We can implement a helper or just do it here.
+	// For simplicity, just append and let ContextReducer handle TOKEN limits.
+	// But `MaxTotalSizeKB` is a "sanity check" to avoid passing 100MB to reducer.
+
+	totalSize := 0
+	for _, f := range collected {
+		totalSize += len(f.Content)
+	}
+
+	limitBytes := s.cfg.Stage2Context.MaxTotalSizeKB * 1024
+	acceptedDeps := 0
+
+	for _, f := range depFiles {
+		if totalSize+len(f.Content) > limitBytes {
+			slog.Info("Stage 2: MaxTotalSizeKB reached, dropping remaining dependencies",
+				"current_size", totalSize, "limit", limitBytes)
+			break
+		}
+		collected = append(collected, f)
+		totalSize += len(f.Content)
+		acceptedDeps++
+	}
+
+	slog.Info("Stage 2: Completed",
+		"diff_files", len(diffFiles),
+		"deps_collected", acceptedDeps,
+		"total_files", len(collected))
+
 	return collected, nil
 }
 

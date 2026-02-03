@@ -5,6 +5,7 @@ import (
 
 	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
+	codecontext "pr-review-automation/internal/context"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/llm"
 )
@@ -27,6 +28,7 @@ type Pipeline struct {
 type ReviewRequest struct {
 	PR           domain.PullRequest
 	LatestCommit string
+	DegradeHint  int // 0=None, 1=Truncate, 2=Drop
 }
 
 // FileChange represents a file change from Stage 1
@@ -41,8 +43,9 @@ type FileChange struct {
 type FileContent struct {
 	Path      string
 	Content   string
-	IsDiffed  bool   // true if this file was in the diff
-	Relevance string // direct, import, test, config
+	IsDiffed  bool                      // true if this file was in the diff
+	Relevance string                    // direct, import, test, config
+	Analysis  *codecontext.FileAnalysis // Semantic analysis result
 }
 
 // Stage1DiffExtractor defines the interface for Stage 1

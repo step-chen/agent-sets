@@ -18,13 +18,15 @@ var (
 )
 
 // Job represents a task to be executed by a worker
-type Job func(ctx context.Context) error
+type Job func(ctx context.Context, degradeLevel int) error
 
+// Pool manages a pool of workers to execute jobs of type T
 // Pool manages a pool of workers to execute jobs of type T
 type Pool[T any] struct {
 	queue           chan item[T]
 	workers         int
 	maxRetries      int
+	retryDegrade    bool
 	shutdownTimeout time.Duration
 
 	// Lifecycle
@@ -35,17 +37,19 @@ type Pool[T any] struct {
 }
 
 type item[T any] struct {
-	payload    T
-	retryCount int
+	payload      T
+	retryCount   int
+	degradeLevel int
 }
 
 // NewWorkerPool creates a new generic Pool
-func NewWorkerPool[T any](workers, queueSize, maxRetries int, shutdownTimeout time.Duration) *Pool[T] {
+func NewWorkerPool[T any](workers, queueSize, maxRetries int, retryDegrade bool, shutdownTimeout time.Duration) *Pool[T] {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Pool[T]{
 		queue:           make(chan item[T], queueSize),
 		workers:         workers,
 		maxRetries:      maxRetries,
+		retryDegrade:    retryDegrade,
 		shutdownTimeout: shutdownTimeout,
 		ctx:             ctx,
 		cancel:          cancel,
@@ -53,7 +57,7 @@ func NewWorkerPool[T any](workers, queueSize, maxRetries int, shutdownTimeout ti
 }
 
 // Start launches the workers with the given handler
-func (p *Pool[T]) Start(handler func(context.Context, T) error) {
+func (p *Pool[T]) Start(handler func(context.Context, T, int) error) {
 	slog.Info("Starting worker pool", "workers", p.workers, "queue_size", cap(p.queue))
 	for i := 0; i < p.workers; i++ {
 		p.wg.Add(1)
@@ -95,14 +99,14 @@ func (p *Pool[T]) Submit(payload T) error {
 	}
 
 	select {
-	case p.queue <- item[T]{payload: payload, retryCount: 0}:
+	case p.queue <- item[T]{payload: payload, retryCount: 0, degradeLevel: 0}:
 		return nil
 	default:
 		return ErrQueueFull
 	}
 }
 
-func (p *Pool[T]) worker(id int, handler func(context.Context, T) error) {
+func (p *Pool[T]) worker(id int, handler func(context.Context, T, int) error) {
 	defer p.wg.Done()
 
 	for task := range p.queue {
@@ -111,7 +115,7 @@ func (p *Pool[T]) worker(id int, handler func(context.Context, T) error) {
 	}
 }
 
-func (p *Pool[T]) processTask(workerID int, task item[T], handler func(context.Context, T) error) {
+func (p *Pool[T]) processTask(workerID int, task item[T], handler func(context.Context, T, int) error) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Panic in worker", "worker_id", workerID, "panic", r)
@@ -119,8 +123,8 @@ func (p *Pool[T]) processTask(workerID int, task item[T], handler func(context.C
 		}
 	}()
 
-	// Execute handler
-	err := handler(p.ctx, task.payload)
+	// Execute handler with degradeLevel
+	err := handler(p.ctx, task.payload, task.degradeLevel)
 	if err == nil {
 		return
 	}
@@ -132,12 +136,18 @@ func (p *Pool[T]) processTask(workerID int, task item[T], handler func(context.C
 	}
 
 	// Check if error is retryable (Context canceled usually means we are shutting down, so don't retry)
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	isDeadline := errors.Is(err, context.DeadlineExceeded)
+	if errors.Is(err, context.Canceled) || isDeadline {
 		// If pool context is canceled, definitely stop.
 		if p.ctx.Err() != nil {
 			return
 		}
-		// If just job timeout, maybe retry?
+	}
+
+	// Degradation Logic
+	if isDeadline && p.retryDegrade {
+		task.degradeLevel++
+		slog.Warn("Deadline exceeded, escalating degradation level", "level", task.degradeLevel)
 	}
 
 	// Non-blocking Retry Logic: Use time.AfterFunc to not block this worker
