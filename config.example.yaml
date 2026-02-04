@@ -86,14 +86,20 @@ pipeline:
   max_concurrent_comments: 5    # Max concurrent comments to submit
   response_max_string_len: 81920 # Max string length for response
 
+  stage1_diff:                    # Stage 1: Diff parsing (optional)
+    prompt_template: pipeline/stage1.md
+
   stage2_context:               # Stage 2: Context enrichment config
+    prompt_template: pipeline/stage2.md  # Add this line
     max_extra_files: 5          # Max extra files to include
     max_total_size_kb: 200      # Max total size of extra files (KB)
     max_file_size: 50000        # Max file size to read (bytes)
 
   stage3_review:                # Stage 3: Code review config
+    prompt_template: pipeline/stage3.md  # Add this line
     temperature: 0.1            # LLM temperature
     max_context_tokens: 81920   # Max context token limit
+    use_json_schema: true       # Add this line - Enable OpenAI Structured Outputs
     proactive_compression: true # Proactively compress context if token limit is reached
     degradation:                # Degradation strategy (when context limit exceeded)
       l1_context_lines: 50      # L1: Context lines to keep around changes

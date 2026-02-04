@@ -217,6 +217,7 @@ func LoadConfig() *Config {
 	cfg.Pipeline.Stage3Review.PromptTemplate = "pipeline/stage3.md"
 	cfg.Pipeline.Stage3Review.Temperature = 0.2
 	cfg.Pipeline.Stage3Review.MaxContextTokens = 64000
+	cfg.Pipeline.Stage3Review.UseJSONSchema = true        // Default: enable strict JSON schema
 	cfg.Pipeline.Stage3Review.ProactiveCompression = true // Default enabled
 	cfg.Pipeline.Stage3Review.Degradation.L1ContextLines = 50
 	cfg.Pipeline.Stage3Review.Degradation.L2ChunkByFile = true

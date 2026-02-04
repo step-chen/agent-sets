@@ -10,15 +10,15 @@
 
 ## 技术栈
 
-| 技术              | 版本/说明                                          |
-| ----------------- | -------------------------------------------------- |
-| **Go**            | 1.25.5                                             |
-| **Google ADK-Go** | v0.3.0                                             |
-| **Google GenAI**  | v1.42.0                                            |
-| **MCP Client**    | github.com/modelcontextprotocol/go-sdk             |
-| **LLM 模型**      | Gemini 1.5 Flash                                   |
-| **监控**          | Prometheus Metrics                                 |
-| **协议支持**      | MCP (Model Context Protocol)、A2A (Agent-to-Agent) |
+| 技术            | 版本/说明                                     |
+| --------------- | --------------------------------------------- |
+| **Go**          | 1.25.5                                        |
+| **MCP Client**  | github.com/modelcontextprotocol/go-sdk v1.2.0 |
+| **LLM Client**  | github.com/openai/openai-go v1.12.0           |
+| **Tree-sitter** | github.com/tree-sitter/go-tree-sitter v0.24.0 |
+| **LLM 模型**    | OpenAI Compatible (Configurable)              |
+| **监控**        | Prometheus Metrics                            |
+| **协议支持**    | MCP (Model Context Protocol)                  |
 
 ---
 
@@ -31,10 +31,17 @@ agent-sets/
 │       └── main.go              # 服务入口点
 ├── internal/
 │   ├── client/              # MCP 与 LLM 客户端适配器
-│   ├── pipeline/            # 审查阶段 (Diff, Context, Review)
-│   ├── processor/           # 业务编排与评论回写
-│   ├── storage/             # SQLite 存储（历史与指标）
-│   └── webhook/             # Bitbucket Webhook 处理器
+│   ├── config/              # 配置加载与验证
+│   ├── context/             # 基于 Tree-sitter 的代码分析
+│   ├── domain/              # 领域模型 (PR, Review 等)
+│   ├── filter/              # 响应过滤器 (截断等)
+│   ├── metrics/             # Prometheus 指标
+│   ├── pipeline/            # 3 阶段审查流水线
+│   ├── processor/           # PR 处理与评论回写
+│   ├── storage/             # SQLite 持久化存储
+│   ├── syncutil/            # 并发工具 (Tracker 等)
+│   ├── validator/           # 输入验证
+│   └── webhook/             # Bitbucket Webhook 处理
 ├── prompts/                 # 提示词模板与规则集
 ├── test/e2e/                # 端到端测试套件
 ├── go.mod
@@ -277,9 +284,9 @@ mcp:
 7. ✅ **优雅关闭**：支持信号触发的优雅关闭
 8. ✅ **持久化存储**：保存审查历史和指标到 SQLite
 9. ✅ **智能去重**：Bitbucket 原生评论去重，防止重复评论
-10. ✅ **智能去重**：Bitbucket 原生评论去重，防止重复评论
-11. ✅ **混合评论模式 (Hybrid Mode)**：重要的 Bug (CRITICAL/WARNING) 作为行内注释发布（便于精准定位），而琐碎的建议 (INFO/NIT) 则汇总到总结报告中（减少视觉干扰）。
-12. ✅ **高可靠性**：全面的超时保护（关机、LLM、MCP）、并发控制及外部依赖熔断机制。
+
+10. ✅ **混合评论模式 (Hybrid Mode)**：重要的 Bug (CRITICAL/WARNING) 作为行内注释发布（便于精准定位），而琐碎的建议 (INFO/NIT) 则汇总到总结报告中（减少视觉干扰）。
+11. ✅ **高可靠性**：全面的超时保护（关机、LLM、MCP）、并发控制及外部依赖熔断机制。
 
 ---
 
@@ -347,7 +354,6 @@ mcp:
      -e BITBUCKET_MCP_ENDPOINT="http://bitbucket-mcp:8080" \
      -e BITBUCKET_MCP_TOKEN="your_token" \
      -e WEBHOOK_SECRET="your_webhook_secret" \
-      -e WEBHOOK_SECRET="your_webhook_secret" \
       -v $(pwd)/data:/app/data \
       --name pr-review \
       pr-review-automation:latest
@@ -421,8 +427,6 @@ llama-server \
 ```
 
 ---
-
-de
 
 ## 扩展系统
 

@@ -10,15 +10,15 @@ This is a **PR Review Automation Tool** (`pr-review-automation`) built on the **
 
 ## Tech Stack
 
-| Technology        | Version / Note                                     |
-| ----------------- | -------------------------------------------------- |
-| **Go**            | 1.25.5                                             |
-| **Google ADK-Go** | v0.3.0                                             |
-| **Google GenAI**  | v1.42.0                                            |
-| **MCP Client**    | github.com/modelcontextprotocol/go-sdk             |
-| **LLM Model**     | Gemini 1.5 Flash                                   |
-| **Observability** | Prometheus Metrics                                 |
-| **Protocols**     | MCP (Model Context Protocol), A2A (Agent-to-Agent) |
+| Technology        | Version / Note                                |
+| ----------------- | --------------------------------------------- |
+| **Go**            | 1.25.5                                        |
+| **MCP Client**    | github.com/modelcontextprotocol/go-sdk v1.2.0 |
+| **LLM Client**    | github.com/openai/openai-go v1.12.0           |
+| **Tree-sitter**   | github.com/tree-sitter/go-tree-sitter v0.24.0 |
+| **LLM Model**     | OpenAI Compatible (Configurable)              |
+| **Observability** | Prometheus Metrics                            |
+| **Protocols**     | MCP (Model Context Protocol)                  |
 
 ---
 
@@ -31,10 +31,17 @@ agent-sets/
 │       └── main.go              # Service entry point
 ├── internal/
 │   ├── client/              # MCP & LLM client adapters
-│   ├── pipeline/            # Review stages (Diff, Context, Review)
-│   ├── processor/           # Orchestration & Comment write-back
-│   ├── storage/             # SQLite storage for history & metrics
-│   └── webhook/             # Bitbucket Webhook handler
+│   ├── config/              # Configuration loading & validation
+│   ├── context/             # Tree-sitter based code analysis
+│   ├── domain/              # Domain models (PR, Review, etc.)
+│   ├── filter/              # Response filters (truncate, etc.)
+│   ├── metrics/             # Prometheus metrics
+│   ├── pipeline/            # 3-stage review pipeline
+│   ├── processor/           # PR processing & comment posting
+│   ├── storage/             # SQLite persistence
+│   ├── syncutil/            # Concurrency utilities
+│   ├── validator/           # Input validation
+│   └── webhook/             # Bitbucket webhook handling
 ├── prompts/                 # Prompt templates & rule sets
 ├── test/e2e/                # End-to-end test suite
 ├── go.mod
@@ -346,7 +353,6 @@ For detailed production deployment instructions (including Webhook configuration
      -e BITBUCKET_MCP_ENDPOINT="http://bitbucket-mcp:8080" \
      -e BITBUCKET_MCP_TOKEN="your_token" \
      -e WEBHOOK_SECRET="your_webhook_secret" \
-      -e WEBHOOK_SECRET="your_webhook_secret" \
       -v $(pwd)/data:/app/data \
       --name pr-review \
       pr-review-automation:latest
