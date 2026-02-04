@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-
-	"pr-review-automation/internal/types"
 )
 
 // refreshToolCache populates the tool cache from all connected MCP servers.
@@ -44,7 +42,7 @@ func (c *MCPClient) doRefreshToolCache(ctx context.Context) error {
 	}
 	c.mu.RUnlock()
 
-	newCache := make(map[string][]types.RawToolSchema)
+	newCache := make(map[string][]RawToolSchema)
 	var errs []error
 
 	for _, name := range serverNames {
@@ -77,14 +75,14 @@ func (c *MCPClient) doRefreshToolCache(ctx context.Context) error {
 		}
 		restrictTools := len(allowedTools) > 0
 
-		var schemas []types.RawToolSchema
+		var schemas []RawToolSchema
 		for _, t := range toolsResult.Tools {
 			// Filter logic: if restricted, must be in allowedMap
 			if restrictTools && !allowedMap[t.Name] {
 				continue
 			}
 
-			schema := types.RawToolSchema{
+			schema := RawToolSchema{
 				Name: t.Name,
 			}
 
@@ -123,12 +121,12 @@ func (c *MCPClient) doRefreshToolCache(ctx context.Context) error {
 
 // GetRawToolSchemas fetches raw tool schemas directly from MCP servers.
 // Now it returns the cached data.
-func (c *MCPClient) GetRawToolSchemas() map[string][]types.RawToolSchema {
+func (c *MCPClient) GetRawToolSchemas() map[string][]RawToolSchema {
 	c.toolCacheMu.RLock()
 	defer c.toolCacheMu.RUnlock()
 
 	// Return a copy to avoid race conditions if caller modifies the map (though slice content is shared)
-	result := make(map[string][]types.RawToolSchema)
+	result := make(map[string][]RawToolSchema)
 	for k, v := range c.toolCache {
 		result[k] = v
 	}

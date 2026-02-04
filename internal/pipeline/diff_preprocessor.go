@@ -1,4 +1,4 @@
-package splitter
+package pipeline
 
 import (
 	"regexp"

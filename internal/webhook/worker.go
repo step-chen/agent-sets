@@ -21,7 +21,6 @@ var (
 type Job func(ctx context.Context, degradeLevel int) error
 
 // Pool manages a pool of workers to execute jobs of type T
-// Pool manages a pool of workers to execute jobs of type T
 type Pool[T any] struct {
 	queue           chan item[T]
 	workers         int
@@ -143,15 +142,15 @@ func (p *Pool[T]) processTask(workerID int, task item[T], handler func(context.C
 
 	// Handle Retry
 	if task.retryCount >= p.maxRetries {
-		// 尝试备用 LLM (如果配置了且尚未使用)
+		// Attempt backup LLM (if configured and not used yet)
 		if p.backupHandler != nil && !task.usedBackup {
 			slog.Warn("Primary LLM exhausted, attempting backup LLM",
-				"degrade_level", task.degradeLevel) // 记录当前降级级别
+				"degrade_level", task.degradeLevel) // Log current degradation level
 			task.usedBackup = true
 			task.retryCount = 0
 
-			// 关键：保持 degradeLevel 不变，复用已确定的降级策略
-			// 配合 CachedStage1/2，备用 LLM 只执行 Stage 3
+			// Key: Keep degradeLevel unchanged, reuse determined degradation strategy.
+			// With CachedStage1/2, backup LLM only executes Stage 3.
 			go func() {
 				// Use non-blocking send or drop if full, similar to retry logic
 				// But since this is a "new" attempt mode, we try to enqueue.

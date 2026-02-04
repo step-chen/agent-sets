@@ -3,13 +3,11 @@ package pipeline
 import (
 	"testing"
 
-	"pr-review-automation/internal/splitter"
-
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_deduplicateDiffs(t *testing.T) {
-	preprocessor := splitter.NewDiffPreprocessor(splitter.PreprocessOptions{})
+	var preprocessor *DiffPreprocessor = NewDiffPreprocessor(PreprocessOptions{})
 
 	tests := []struct {
 		name         string
@@ -46,7 +44,7 @@ func Test_deduplicateDiffs(t *testing.T) {
 				"diff --git a/file1.go b/file1.go\nindex 111..222\n+++ b/file1.go\n@@ -1 +1 @@\n-content\n+changed",
 				"diff --git a/folder/file1.go b/folder/file1.go\nindex 999..000\n+++ b/folder/file1.go\n@@ -10 +10 @@\n-content\n+changed",
 			},
-			expected: []string{"file1.go"}, // Should be treated as duplicate despite different header/index
+			expected: []string{"file1.go"}, // Should be different header/index
 		},
 	}
 

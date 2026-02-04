@@ -13,7 +13,7 @@ func TransformLinks(text, prWebURL string) string {
 		return text
 	}
 
-	// Pattern 1: [任意文本](相对路径#L行号)
+	// Pattern 1: [Text](RelativePath#LRow)
 	// Example: [src/main.cpp:10](src/main.cpp#L10) -> [src/main.cpp:10](PR_URL/diff#src/main.cpp?t=10)
 	// Group 1: Label text (e.g. "src/main.cpp:10")
 	// Group 2: File path (e.g. "src/main.cpp")
@@ -28,7 +28,7 @@ func TransformLinks(text, prWebURL string) string {
 		return fmt.Sprintf("[%s](%s/diff#%s?t=%s)", label, prWebURL, path, line)
 	})
 
-	// Pattern 2: [任意文本](相对路径) - File Only Link
+	// Pattern 2: [Text](RelativePath) - File Only Link
 	// Example: [src/main.cpp](src/main.cpp) -> [src/main.cpp](PR_URL/diff#src/main.cpp)
 	// We must be careful not to match standard web links (http/https).
 	// We assume relative paths don't start with http/https

@@ -5,9 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	domain "pr-review-automation/internal/domain"
 	"time"
-
-	"pr-review-automation/internal/types"
 
 	"github.com/openai/openai-go"
 )
@@ -161,7 +160,7 @@ func (a *OpenAIAdapter) wrapError(err error) error {
 		statusCode := apiErr.StatusCode
 		// 429 (Rate Limit) and 5xx (Server Errors) are retryable
 		if statusCode == 429 || (statusCode >= 500 && statusCode < 600) {
-			return types.NewRetryableError(err)
+			return domain.NewRetryableError(err)
 		}
 	}
 

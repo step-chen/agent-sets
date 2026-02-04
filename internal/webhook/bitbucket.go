@@ -19,7 +19,7 @@ import (
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/processor"
-	internal_sync "pr-review-automation/internal/sync" // Custom sync package
+	"pr-review-automation/internal/syncutil"
 
 	"github.com/tidwall/gjson"
 )
@@ -37,8 +37,8 @@ type BitbucketWebhookHandler struct {
 	config         *config.Config
 	parser         *PayloadParser
 	workerPool     *Pool[*Submission]
-	debouncer      *internal_sync.Debouncer
-	keyLock        *internal_sync.KeyLock
+	debouncer      *syncutil.Debouncer
+	keyLock        *syncutil.KeyLock
 	latestPayloads sync.Map // Map[string][]byte: PR-ID -> Latest Payload
 }
 
@@ -60,7 +60,7 @@ func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Proces
 
 	wp := NewWorkerPool[*Submission](workerCount, queueSize, cfg.Webhook.MaxRetries, cfg.Webhook.RetryDegrade, cfg.Server.ShutdownTimeout)
 
-	keyLock := internal_sync.NewKeyLock()
+	keyLock := syncutil.NewKeyLock()
 
 	// Initialize Debouncer
 	debounceWindow := cfg.Server.DebounceWindow
@@ -125,7 +125,7 @@ func NewBitbucketWebhookHandler(cfg *config.Config, prProcessor processor.Proces
 		})
 	}
 
-	debouncer := internal_sync.NewDebouncer(debounceWindow)
+	debouncer := syncutil.NewDebouncer(debounceWindow)
 
 	return &BitbucketWebhookHandler{
 		prProcessor: prProcessor,

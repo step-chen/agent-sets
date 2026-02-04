@@ -18,11 +18,11 @@ import (
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/filter/bitbucket"
-	"pr-review-automation/internal/llm"
+	"pr-review-automation/internal/syncutil"
+
 	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/processor"
 	"pr-review-automation/internal/storage"
-	internal_sync "pr-review-automation/internal/sync"
 	"pr-review-automation/internal/webhook"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -63,7 +63,7 @@ func main() {
 	}
 
 	// Initialize Backup LLM (Optional)
-	var backupLLM llm.Client
+	var backupLLM client.LLMClient
 	if cfg.BackupLLM != nil {
 		backupLLM = client.NewLLMFromConfig(cfg.BackupLLM.Endpoint, cfg.BackupLLM.APIKey, cfg.BackupLLM.Model, cfg.BackupLLM.Timeout)
 		if checker, ok := backupLLM.(interface{ Ping(context.Context) error }); ok {
@@ -115,7 +115,7 @@ func main() {
 	}
 
 	// Initialize Task Tracker for background operations
-	taskTracker := internal_sync.NewTracker()
+	taskTracker := syncutil.NewTracker()
 
 	// Initialize PR processor
 	// Note: PRProcessor now uses domain types and generic Reviewer interface

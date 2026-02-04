@@ -17,7 +17,6 @@ type PullRequest struct {
 	Author       string
 	LatestCommit string // Latest commit SHA for tracking reviewed versions
 	WebURL       string // Full URL to the pull request in the web interface
-	// SourceBranch and TargetBranch can be added here if needed in the future
 }
 
 // IsValid checks if the PullRequest has the minimum required fields to proceed.
@@ -64,8 +63,8 @@ func (l *FlexibleLine) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	// 3. Fallback/Error (optional: try string parsing if LLM sends "4-5")
-	return nil // Logic: treat as 0 (PR comment) if parse fails, or return error
+	// 3. Fallback/Error
+	return nil
 }
 
 // Fingerprint generates a semantic fingerprint for the comment.
@@ -91,9 +90,9 @@ type ReviewRequest struct {
 	HistoricalComments []ReviewComment
 	DegradeHint        int // 0=None, 1=Truncate, 2=Drop
 
-	// Stage 缓存 (用于重试时复用)
-	// 使用 interface{} 避免 domain -> pipeline 循环依赖 (pipeline.FileChange/FileContent)
-	// 使用时进行类型断言：*[]pipeline.FileChange 和 *[]pipeline.FileContent
+	// Stage 3 cache (used for retry)
+	// Use interface{} to avoid domain -> pipeline cyclic dependency (pipeline.FileChange/FileContent)
+	// Cast when using: *[]pipeline.FileChange and *[]pipeline.FileContent
 	CachedStage1 interface{} `json:"-"`
 	CachedStage2 interface{} `json:"-"`
 }
@@ -104,4 +103,31 @@ type ReviewResult struct {
 	Score    int             `json:"score" jsonschema:"minimum=0,maximum=100,required"`
 	Summary  string          `json:"summary" jsonschema:"required"`
 	Model    string
+}
+
+// Path constants migrated from config package to avoid dependency cycles
+const (
+	// PathPrefixGitSource is the standard Git source prefix
+	PathPrefixGitSource = "a/"
+	// PathPrefixGitDestination is the standard Git destination prefix
+	PathPrefixGitDestination = "b/"
+)
+
+// NormalizePath normalizes a file path by removing common VCS prefixes (Git/SVN)
+// and ensuring standard separators.
+func NormalizePath(path string) string {
+	// Standardize separators to forward slashes
+	path = strings.ReplaceAll(path, "\\", "/")
+
+	// List of prefixes to strip
+	prefixes := []string{
+		PathPrefixGitSource,
+		PathPrefixGitDestination,
+	}
+
+	for _, p := range prefixes {
+		path = strings.TrimPrefix(path, p)
+	}
+
+	return path
 }

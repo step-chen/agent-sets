@@ -14,7 +14,7 @@ import (
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/storage"
-	internal_sync "pr-review-automation/internal/sync"
+	"pr-review-automation/internal/syncutil"
 	"pr-review-automation/internal/validator"
 	"strconv"
 	"time"
@@ -44,11 +44,11 @@ type PRProcessor struct {
 	reviewer  Reviewer
 	commenter Commenter
 	storage   storage.Repository
-	tracker   *internal_sync.Tracker
+	tracker   *syncutil.Tracker
 }
 
 // NewPRProcessor creates a new PR processor with dependencies injected
-func NewPRProcessor(cfg *config.Config, reviewer Reviewer, commenter Commenter, storage storage.Repository, tracker *internal_sync.Tracker) *PRProcessor {
+func NewPRProcessor(cfg *config.Config, reviewer Reviewer, commenter Commenter, storage storage.Repository, tracker *syncutil.Tracker) *PRProcessor {
 	return &PRProcessor{
 		cfg:       cfg,
 		reviewer:  reviewer,

@@ -8,7 +8,7 @@ import (
 
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
-	internal_sync "pr-review-automation/internal/sync"
+	"pr-review-automation/internal/syncutil"
 	"strings"
 )
 
@@ -94,7 +94,7 @@ index 123..456 100644
 	}
 
 	// Create processor
-	tracker := internal_sync.NewTracker()
+	tracker := syncutil.NewTracker()
 	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil, tracker)
 
 	// Test data
@@ -129,7 +129,7 @@ func TestPRProcessor_ProcessPullRequest_ReviewFail(t *testing.T) {
 	}
 	mockCommenter := &MockCommenter{}
 
-	tracker := internal_sync.NewTracker()
+	tracker := syncutil.NewTracker()
 	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil, tracker)
 
 	err := p.ProcessPullRequest(context.Background(), &domain.ReviewRequest{PR: &domain.PullRequest{ID: "123"}})
@@ -179,7 +179,7 @@ func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
 			},
 		},
 	}
-	tracker := internal_sync.NewTracker()
+	tracker := syncutil.NewTracker()
 	p := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
 	pr := &domain.PullRequest{ID: "123", ProjectKey: "PROJ", RepoSlug: "repo"}
 

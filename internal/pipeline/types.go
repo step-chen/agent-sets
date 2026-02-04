@@ -7,11 +7,10 @@ import (
 	"pr-review-automation/internal/config"
 	codecontext "pr-review-automation/internal/context"
 	"pr-review-automation/internal/domain"
-	"pr-review-automation/internal/llm"
 )
 
-// LLMClient alias to internal llm client
-type LLMClient = llm.Client
+// LLMClient alias to client.LLMClient
+type LLMClient = client.LLMClient
 
 // Pipeline executes the 3-stage PR review process
 type Pipeline struct {

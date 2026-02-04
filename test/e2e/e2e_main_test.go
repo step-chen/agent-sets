@@ -24,7 +24,7 @@ import (
 	"pr-review-automation/internal/filter/bitbucket"
 	"pr-review-automation/internal/pipeline"
 	"pr-review-automation/internal/processor"
-	internal_sync "pr-review-automation/internal/sync"
+	"pr-review-automation/internal/syncutil"
 	"pr-review-automation/internal/webhook"
 
 	"github.com/joho/godotenv"
@@ -235,7 +235,7 @@ func TestE2E_Main(t *testing.T) {
 	promptLoader.SetRawSchemaProvider(mcpClient)
 
 	// Create Reviewer & Processor
-	taskTracker := internal_sync.NewTracker()
+	taskTracker := syncutil.NewTracker()
 	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, primaryLLM, promptLoader)
 	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, nil, taskTracker)
 

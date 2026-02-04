@@ -8,13 +8,13 @@ import (
 	"log/slog"
 	"time"
 
+	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/filter"
-	"pr-review-automation/internal/llm"
+
 	"pr-review-automation/internal/metrics"
 	"pr-review-automation/internal/pipeline"
-	"pr-review-automation/internal/types"
 
 	"github.com/tidwall/gjson"
 )
@@ -25,13 +25,13 @@ import (
 // L2: Robust, LLM-based extraction for unknown structures.
 type PayloadParser struct {
 	cfg           config.WebhookConfig
-	llm           llm.Client
+	llm           client.LLMClient
 	promptLoader  *pipeline.PromptLoader
 	payloadFilter filter.PayloadFilter
 }
 
 // NewPayloadParser creates a new PayloadParser.
-func NewPayloadParser(cfg config.WebhookConfig, client llm.Client, promptLoader *pipeline.PromptLoader, payloadFilter filter.PayloadFilter) *PayloadParser {
+func NewPayloadParser(cfg config.WebhookConfig, client client.LLMClient, promptLoader *pipeline.PromptLoader, payloadFilter filter.PayloadFilter) *PayloadParser {
 	return &PayloadParser{
 		cfg:           cfg,
 		llm:           client,
@@ -184,7 +184,7 @@ func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*doma
 		respText, err := p.llm.SimpleTextQuery(ctx, sysPrompt, truncated)
 		if err == nil {
 			// Clean up response (sometimes LLMs include markdown blocks)
-			respText = types.CleanJSONFromMarkdown(respText)
+			respText = pipeline.CleanJSONFromMarkdown(respText)
 
 			var pr domain.PullRequest
 			if err := json.Unmarshal([]byte(respText), &pr); err != nil {
@@ -227,7 +227,7 @@ func (p *PayloadParser) isRetryableError(err error) bool {
 	}
 
 	// Check for explicit RetryableError (from adapter)
-	var retryErr *types.RetryableError
+	var retryErr *domain.RetryableError
 	if errors.As(err, &retryErr) {
 		return true
 	}

@@ -165,7 +165,7 @@ func parseReviewResult(responseStr string) (*domain.ReviewResult, error) {
 	// but we still need to handle potential format issues or partial failures cautiously.
 	// For now, we stick to direct unmarshal as the schema ensures structure.
 
-	jsonStr := cleanJSON(responseStr)
+	jsonStr := CleanJSONFromMarkdown(responseStr)
 	var result domain.ReviewResult
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		return nil, err
@@ -187,9 +187,11 @@ func (s *Stage3) getResultFormat() string {
 	return ""
 }
 
-// cleanJSON removes markdown code block markers if present
-func cleanJSON(s string) string {
+// CleanJSONFromMarkdown removes markdown code block markers if present.
+// This is used to extract raw JSON from LLM responses that may be wrapped in code blocks.
+func CleanJSONFromMarkdown(s string) string {
 	s = strings.TrimSpace(s)
+	// Handle ```json ... ``` or just ``` ... ```
 	if strings.HasPrefix(s, "```json") {
 		s = strings.TrimPrefix(s, "```json")
 		s = strings.TrimSuffix(s, "```")

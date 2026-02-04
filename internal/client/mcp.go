@@ -13,7 +13,6 @@ import (
 
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/filter"
-	"pr-review-automation/internal/types"
 )
 
 // TransportFactory creates a new transport
@@ -30,13 +29,13 @@ type MCPClient struct {
 	responseFilters map[string]filter.ResponseFilter // Response filters per server
 	callHistory     sync.Map                         // History of tool calls for deduplication
 
-	mu               sync.RWMutex                     // Thread-safe access (connections)
-	transportFactory TransportFactory                 // Factory for creating transports (injectable for testing)
-	requestGroup     singleflight.Group               // Singleflight group for coalescing reconnections
-	baseCtx          context.Context                  // Lifecycle context for the client and its transports
-	cancel           context.CancelFunc               // Cancel function to cleanup resources on Close
-	toolCache        map[string][]types.RawToolSchema // Cache storage: serverName -> tools
-	toolCacheMu      sync.RWMutex                     // Mutex specifically for tool cache
+	mu               sync.RWMutex               // Thread-safe access (connections)
+	transportFactory TransportFactory           // Factory for creating transports (injectable for testing)
+	requestGroup     singleflight.Group         // Singleflight group for coalescing reconnections
+	baseCtx          context.Context            // Lifecycle context for the client and its transports
+	cancel           context.CancelFunc         // Cancel function to cleanup resources on Close
+	toolCache        map[string][]RawToolSchema // Cache storage: serverName -> tools
+	toolCacheMu      sync.RWMutex               // Mutex specifically for tool cache
 }
 
 // SetTransportFactory allows tests to inject a mock transport factory
@@ -70,7 +69,7 @@ func NewMCPClient(cfg *config.Config) *MCPClient {
 		transportFactory: NewMCPTransport, // Default to standard transport factory
 		baseCtx:          ctx,
 		cancel:           cancel,
-		toolCache:        make(map[string][]types.RawToolSchema),
+		toolCache:        make(map[string][]RawToolSchema),
 	}
 }
 

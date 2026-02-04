@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"pr-review-automation/internal/client"
 	"pr-review-automation/internal/config"
-	"pr-review-automation/internal/types"
 	"strings"
 	"text/template"
 )
@@ -15,7 +15,7 @@ import (
 // PromptLoader loads prompts from filesystem
 type PromptLoader struct {
 	baseDir           string
-	rawSchemaProvider types.RawSchemaProvider
+	rawSchemaProvider client.RawSchemaProvider
 }
 
 // NewPromptLoader creates a new prompt loader
@@ -24,7 +24,7 @@ func NewPromptLoader(baseDir string) *PromptLoader {
 }
 
 // SetRawSchemaProvider sets the raw schema provider for dynamic prompt generation
-func (l *PromptLoader) SetRawSchemaProvider(p types.RawSchemaProvider) {
+func (l *PromptLoader) SetRawSchemaProvider(p client.RawSchemaProvider) {
 	l.rawSchemaProvider = p
 }
 

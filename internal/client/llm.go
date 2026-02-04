@@ -1,4 +1,4 @@
-package llm
+package client
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 )
 
 // Client defines the interface for interacting with an LLM provider using OpenAI-compatible types.
-type Client interface {
+type LLMClient interface {
 	// Chat sends a chat completion request.
 	Chat(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error)
 	// SimpleTextQuery sends a simple text query.
