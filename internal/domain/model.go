@@ -34,10 +34,10 @@ const (
 
 // ReviewComment represents a single review comment
 type ReviewComment struct {
-	File     string       `json:"path"`
-	Line     FlexibleLine `json:"line"`
-	Comment  string       `json:"message"`
-	Severity string       `json:"severity,omitempty"`
+	File     string       `json:"path" jsonschema:"minLength=1,required"`
+	Line     FlexibleLine `json:"line" jsonschema:"required"`
+	Comment  string       `json:"message" jsonschema:"minLength=1,required"`
+	Severity string       `json:"severity,omitempty" jsonschema:"enum=CRITICAL,enum=WARNING,enum=INFO,enum=NIT,required,description=CRITICAL: bugs/crashes/security; WARNING: performance/logic gaps; INFO: style/best-practices"`
 	Marker   string       `json:"marker,omitempty"` // Internal use for deduplication
 }
 
@@ -100,8 +100,8 @@ type ReviewRequest struct {
 
 // ReviewResult represents the outcome of a review
 type ReviewResult struct {
-	Comments []ReviewComment `json:"comments"`
-	Score    int             `json:"score"`
-	Summary  string          `json:"summary"`
+	Comments []ReviewComment `json:"comments" jsonschema:"required"`
+	Score    int             `json:"score" jsonschema:"minimum=0,maximum=100,required"`
+	Summary  string          `json:"summary" jsonschema:"required"`
 	Model    string
 }

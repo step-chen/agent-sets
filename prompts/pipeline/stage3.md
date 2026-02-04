@@ -10,18 +10,14 @@ PR Description: {{.PR.Description}}
 
 {{.LanguageRules}}
 
-1. Analyze the provided changes and context, applying the domain specific rules above.
-2. **Clean Code**: **No dead/dup/legacy code**. Remove code that is commented out, unreachable, or duplicated.
-3. Provide constructive feedback. Explain _why_ something is an issue and _how_ to fix it.
-4. Output specific file paths and line numbers for each comment.
-5. If the code looks good, do not invent issues.
-6. Output strict JSON matching the structure below. Ensure 'line' is a single integer and 'comments' is a raw array (not stringified).
-7. For the 'summary' field:
-   - Provide a **concise paragraph** summarizing the overall quality and key findings.
-   - Do NOT use headers (e.g. # or ##).
-   - You MAY reference specific files using Markdown links: [`path:line`](path#Lline).
-   - Do NOT repeat the full content of individual comments. Focus on patterns and overall assessment.
-8. **Avoid Redundancy**: If a similar issue pattern appears on multiple lines, mention it once in comments (or let the system aggregate it) but do NOT clutter.
+1. Apply domain rules. Flag: dead/dup/legacy/commented-out code.
+2. Actionable feedback: explain _why_ + _how_ to fix.
+3. **Inline Comments**: MUST have a specific `path` and `line`. `message` field must contain the actionable feedback.
+4. **General Feedback**: Put in `summary`. DO NOT create inline comments without a valid path.
+5. No invented issues. No redundant comments.
+6. Summary: concise paragraph, no headers, reference files as [`path:line`](path#Lline).
+7. Output strict JSON per format below. `comments` array is ONLY for specific code issues.
+8. Output comments and summary in **English** only.
 
 ## Changed Files
 
@@ -50,4 +46,17 @@ PR Description: {{.PR.Description}}
 
 ## Output Format
 
-{{.ResultFormat}}
+You must output strict JSON matching the following Schema.
+Pay attention to the `description` fields for semantic definitions.
+
+```json
+{{.SchemaJSON}}
+```
+
+## Scoring Rules
+
+(Required logic not definable in schema)
+
+- Start at 100.
+- Deduct 10 points for each CRITICAL issue.
+- Deduct 5 points for each WARNING issue.

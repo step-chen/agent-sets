@@ -70,15 +70,18 @@ func (s *Stage3) Review(ctx context.Context, req ReviewRequest, changes []FileCh
 func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []FileChange, contextFiles []FileContent) (*domain.ReviewResult, error) {
 	slog.Info("Stage 3: Executing Core Review", "files_changed", len(changes), "context_files", len(contextFiles))
 
-	// 1. Prepare Prompt Data
+	// 1. Prepare Schema Provider
+	schemaProvider := NewSchemaProvider()
+
+	// 2. Prepare Prompt Data
 	data := map[string]interface{}{
-		"PR":           req.PR,
-		"ResultFormat": s.getResultFormat(),
-		"Changes":      changes,
-		"Context":      contextFiles,
+		"PR":         req.PR,
+		"SchemaJSON": schemaProvider.GetSchemaJSON(), // Injected into Prompt
+		"Changes":    changes,
+		"Context":    contextFiles,
 	}
 
-	// 2. Load System Prompt
+	// 3. Load System Prompt
 	// [New] Dynamic Language Rule Injection
 	lRules, lNames := s.loadLanguageRules(ctx, changes)
 	data["LanguageRules"] = lRules
@@ -89,22 +92,36 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 		return nil, fmt.Errorf("failed to load stage 3 prompt: %w", err)
 	}
 
-	// 3. User Message (can be simple, as system prompt contains everything)
+	// 4. User Message
 	userMessage := fmt.Sprintf("Review PR %s: %s", req.PR.ID, req.PR.Title)
 
-	// 4. Call LLM
-	// Construct request using OpenAI types
-	val := shared.NewResponseFormatJSONObjectParam()
+	// 5. Call LLM
 	slog.Debug("LLM Request (Stage 3)", "system_prompt", systemPromptStr, "user_message", userMessage)
+
+	// Build Response Format using Schema
+	var responseFormat openai.ChatCompletionNewParamsResponseFormatUnion
+	if s.cfg.Stage3Review.UseJSONSchema {
+		responseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
+				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
+					Name:   "review_result",
+					Strict: openai.Bool(true),
+					Schema: schemaProvider.GetSchema(),
+				},
+			},
+		}
+	} else {
+		val := shared.NewResponseFormatJSONObjectParam()
+		responseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{OfJSONObject: &val}
+	}
+
 	params := openai.ChatCompletionNewParams{
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(systemPromptStr),
 			openai.UserMessage(userMessage),
 		},
-		Temperature: openai.Float(s.cfg.Stage3Review.Temperature),
-		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONObject: &val,
-		},
+		Temperature:    openai.Float(s.cfg.Stage3Review.Temperature),
+		ResponseFormat: responseFormat, // Updated
 	}
 
 	resp, err := s.llm.Chat(ctx, params)
@@ -117,8 +134,9 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 	}
 
 	responseStr := resp.Choices[0].Message.Content
+	slog.Debug("LLM Response (Stage 3)", "raw_response", responseStr)
 
-	// 5. Parse Result
+	// 6. Parse Result
 	result, err := parseReviewResult(responseStr)
 	if err != nil {
 		slog.Error("failed to parse review result", "error", err, "response", responseStr)
@@ -129,10 +147,9 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 		}, nil
 	}
 
-	slog.Info("Stage 3: Completed", "comments_generated", len(result.Comments))
+	slog.Info("Stage 3: Completed", "score", result.Score, "comments_generated", len(result.Comments))
 
 	// Final merge and summary enrichment
-	// This ensures that even single-stage reviews get deduplicated/merged.
 	merger := NewCommentMerger(s.cfg.CommentMerge)
 	mergedComments, summaryAppendix := merger.Merge(result.Comments)
 	result.Comments = mergedComments
@@ -144,82 +161,30 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 }
 
 func parseReviewResult(responseStr string) (*domain.ReviewResult, error) {
-	// reviewResultInternal is a temporary struct to handle inconsistent LLM output
-	// where "comments" might be a raw array or a stringified JSON array.
-	type reviewResultInternal struct {
-		Comments interface{} `json:"comments"`
-		Score    int         `json:"score"`
-		Summary  string      `json:"summary"`
-		Model    string
-	}
+	// With strict schema, we can try to unmarshal directly into domain.ReviewResult
+	// but we still need to handle potential format issues or partial failures cautiously.
+	// For now, we stick to direct unmarshal as the schema ensures structure.
 
-	var internalResult reviewResultInternal
-
-	// Try to clean up markdown code blocks if present (common with some models)
 	jsonStr := cleanJSON(responseStr)
-
-	if err := json.Unmarshal([]byte(jsonStr), &internalResult); err != nil {
+	var result domain.ReviewResult
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		return nil, err
 	}
 
-	var finalComments []domain.ReviewComment
-
-	// Robustly handle Comments field
-	switch v := internalResult.Comments.(type) {
-	case string:
-		// Case 1: Comments is a stringified JSON array
-		if err := json.Unmarshal([]byte(v), &finalComments); err != nil {
-			slog.Error("failed to unmarshal stringified comments", "error", err, "value", v)
-			// Proceed with empty comments but valid structure
-		}
-	case []interface{}:
-		// Case 2: Comments is a generic JSON array, need to re-marshal and unmarshal to strong type
-		data, _ := json.Marshal(v)
-		if err := json.Unmarshal(data, &finalComments); err != nil {
-			slog.Error("failed to remarshal comments array", "error", err)
-		}
-	case map[string]interface{}:
-		// Case 3: Comments is a single JSON object (LLM forgot the array brackets)
-		data, _ := json.Marshal(v)
-		var singleComment domain.ReviewComment
-		if err := json.Unmarshal(data, &singleComment); err == nil {
-			finalComments = append(finalComments, singleComment)
-		} else {
-			slog.Error("failed to remarshal single comment object", "error", err)
-		}
-	case nil:
-		// No comments
-	default:
-		slog.Warn("unknown type for comments field", "type", fmt.Sprintf("%T", v))
-	}
-
-	// Enrich comments with file paths if missing
-	for i := range finalComments {
-		if finalComments[i].Severity == "" {
-			finalComments[i].Severity = domain.CommentSeverityInfo // Default
+	// Defaulting logic is technically not needed if Schema enforced required fields,
+	// but kept for safety if model hallucinated empty strings.
+	for i := range result.Comments {
+		if result.Comments[i].Severity == "" {
+			result.Comments[i].Severity = domain.CommentSeverityInfo
 		}
 	}
 
-	return &domain.ReviewResult{
-		Comments: finalComments,
-		Score:    internalResult.Score,
-		Summary:  internalResult.Summary,
-		Model:    internalResult.Model,
-	}, nil
+	return &result, nil
 }
+
 func (s *Stage3) getResultFormat() string {
-	return `{
-  "comments": [
-    {
-      "path": "path/to/file.go",
-      "line": 42,
-      "message": "Comment text...",
-      "severity": "INFO|WARNING|CRITICAL|NIT"
-    }
-  ],
-  "score": 85,
-  "summary": "Overall review summary..."
-}`
+	// Deprecated by Schema Injection, but kept for interface if needed or legacy fallback
+	return ""
 }
 
 // cleanJSON removes markdown code block markers if present

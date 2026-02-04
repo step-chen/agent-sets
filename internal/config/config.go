@@ -144,9 +144,11 @@ type Stage2Config struct {
 }
 
 type Stage3Config struct {
-	PromptTemplate       string            `yaml:"prompt_template"`
-	Temperature          float64           `yaml:"temperature"`
-	MaxContextTokens     int               `yaml:"max_context_tokens"`
+	PromptTemplate   string  `yaml:"prompt_template"`
+	Temperature      float64 `yaml:"temperature"`
+	MaxContextTokens int     `yaml:"max_context_tokens"`
+	// UseJSONSchema enables OpenAI Structured Outputs (Strict Mode)
+	UseJSONSchema        bool              `yaml:"use_json_schema"`
 	ProactiveCompression bool              `yaml:"proactive_compression"`
 	Degradation          DegradationConfig `yaml:"degradation"`
 }

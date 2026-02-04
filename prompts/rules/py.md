@@ -1,15 +1,11 @@
-### Python Rules
+### Python (3.12+)
 
-#### Core Principles
+**Principles**: KISS (Clear > Clever, Explicit > Implicit). Zero-race, zero-leak.
 
-1. **KISS**: Clear > Clever. Explicit > Implicit.
-2. **Modern**: Python 3.18+. No legacy/back-compat.
-3. **100% Safe**: Zero races. Zero leaks. Graceful exit.
+**Criteria**:
 
-#### Critical Criteria
-
-- **Concurrency**: `asyncio` patterns. `Semaphore` limits. No races.
-- **Resource Safety**: Always `with` context managers. Proper cleanup.
-- **Performance**: `set`/`dict` O(1). Generators. `lru_cache`. Omit `getattr`.
-- **Modern Python**: Type hints. Match. Walrus (`:=`).
-- **Logic**: Verify functional combination & flow correctness.
+- Concurrency: `asyncio` patterns. `Semaphore` limits.
+- Resources: Always `with` context managers. Proper cleanup.
+- Performance: `set`/`dict` O(1). Generators. `lru_cache`. Avoid `getattr`.
+- Modern: Type hints, `match`, Walrus (`:=`).
+- Logic: Verify functional combination & flow correctness.

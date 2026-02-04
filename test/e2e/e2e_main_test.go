@@ -196,15 +196,16 @@ func TestE2E_Main(t *testing.T) {
 					// Formatting logic
 					var comment string
 					if filePath, ok := args["filePath"]; ok {
-						comment = fmt.Sprintf("Path: %v | LineType: %v | Comment: %v",
-							filePath, args["lineType"], args["commentText"])
+						comment = fmt.Sprintf("Path: %v | Line: %v | LineType: %v | Comment: %v",
+							filePath, args["lineNumber"], args["lineType"], args["commentText"])
 					} else {
 						// Summary or General Comment
-						comment = fmt.Sprintf("[General/Summary Comment] | Comment: %v", args["commentText"])
+						comment = fmt.Sprintf("Type: Summary/General | Comment: %v", args["commentText"])
 					}
 
 					mu.Lock()
-					fmt.Printf("\n[MOCK] Writing Comment to %s: %s\n", file, comment)
+					// Print FULL comment for debugging link generation
+					fmt.Printf("\n[MOCK] Writing Comment to %s:\n%s\n", file, args["commentText"])
 					capturedData[file] = append(capturedData[file], comment)
 					mu.Unlock()
 
