@@ -130,6 +130,16 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 	}
 
 	slog.Info("Stage 3: Completed", "comments_generated", len(result.Comments))
+
+	// Final merge and summary enrichment
+	// This ensures that even single-stage reviews get deduplicated/merged.
+	merger := NewCommentMerger(s.cfg.CommentMerge)
+	mergedComments, summaryAppendix := merger.Merge(result.Comments)
+	result.Comments = mergedComments
+	if summaryAppendix != "" {
+		result.Summary += summaryAppendix
+	}
+
 	return result, nil
 }
 

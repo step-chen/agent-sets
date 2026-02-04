@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tidwall/gjson"
 )
 
 // InterceptingTransport implements mcp.Transport
@@ -137,8 +139,8 @@ func TestE2E_Main(t *testing.T) {
 	// 3. Shared State for Interception
 	var (
 		mu           sync.Mutex
-		currentFile  string
 		capturedData = make(map[string][]string) // FileName -> []Comments
+		prFileMap    sync.Map                    // UniqueKey (proj/repo/id) -> FileName
 	)
 
 	// 4. Setup MCP Client with Interceptor
@@ -169,9 +171,39 @@ func TestE2E_Main(t *testing.T) {
 				}
 
 				if params.Name == config.ToolBitbucketAddComment {
+					// Identify which test file this request belongs to using PR ID
+					args := params.Arguments
+					projectKey := fmt.Sprintf("%v", args["projectKey"])
+					repoSlug := fmt.Sprintf("%v", args["repoSlug"])
+					// Handle pullRequestId which might be float64 (JSON) or int
+					var prID string
+					if vid, ok := args["pullRequestId"].(float64); ok {
+						prID = strconv.Itoa(int(vid))
+					} else {
+						prID = fmt.Sprintf("%v", args["pullRequestId"])
+					}
+
+					uniqueKey := fmt.Sprintf("%s/%s/%s", projectKey, repoSlug, prID)
+					fileVal, ok := prFileMap.Load(uniqueKey)
+					file := "unknown"
+					if ok {
+						file = fileVal.(string)
+					} else {
+						// Fallback: This might be an unknown or auxiliary request
+						slog.Warn("Could not map PR to file", "key", uniqueKey)
+					}
+
+					// Formatting logic
+					var comment string
+					if filePath, ok := args["filePath"]; ok {
+						comment = fmt.Sprintf("Path: %v | LineType: %v | Comment: %v",
+							filePath, args["lineType"], args["commentText"])
+					} else {
+						// Summary or General Comment
+						comment = fmt.Sprintf("[General/Summary Comment] | Comment: %v", args["commentText"])
+					}
+
 					mu.Lock()
-					file := currentFile
-					comment := fmt.Sprintf("Path: %v | LineType: %v | Comment: %v", params.Arguments["filePath"], params.Arguments["lineType"], params.Arguments["commentText"])
 					fmt.Printf("\n[MOCK] Writing Comment to %s: %s\n", file, comment)
 					capturedData[file] = append(capturedData[file], comment)
 					mu.Unlock()
@@ -230,16 +262,26 @@ func TestE2E_Main(t *testing.T) {
 	for _, file := range files {
 		fileName := filepath.Base(file)
 
-		mu.Lock()
-		currentFile = fileName
-		mu.Unlock()
-
 		t.Logf("Processing request: %s", fileName)
 
 		// Read Body
 		body, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("Failed to read file %s: %v", file, err)
+		}
+
+		// Register PR in Map
+		// We use GJSON to extract ID, Project, Repo
+		prID := gjson.GetBytes(body, "pullRequest.id").String()
+		projectKey := gjson.GetBytes(body, "pullRequest.fromRef.repository.project.key").String()
+		repoSlug := gjson.GetBytes(body, "pullRequest.fromRef.repository.slug").String()
+
+		if prID != "" && projectKey != "" && repoSlug != "" {
+			uniqueKey := fmt.Sprintf("%s/%s/%s", projectKey, repoSlug, prID)
+			prFileMap.Store(uniqueKey, fileName)
+			t.Logf("Mapped %s -> %s", uniqueKey, fileName)
+		} else {
+			t.Logf("Warning: Could not extract PR identity from %s", fileName)
 		}
 
 		// Send Request

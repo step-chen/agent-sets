@@ -152,11 +152,12 @@ type Stage3Config struct {
 }
 
 type DegradationConfig struct {
-	L1ContextLines    int     `yaml:"l1_context_lines"` // L1: Lines of context to keep around changes (default: 50)
-	L2ChunkByFile     bool    `yaml:"l2_chunk_by_file"` // L2: Enable chunking by file (default: true)
-	L3DiffOnly        bool    `yaml:"l3_diff_only"`     // L3: Fallback to diff only (default: true)
-	L2MaxFailureRatio float64 `yaml:"l2_max_failure_ratio"`
-	L2FailFast        bool    `yaml:"l2_fail_fast"`
+	L1ContextLines    int                `yaml:"l1_context_lines"` // L1: Lines of context to keep around changes (default: 50)
+	L2ChunkByFile     bool               `yaml:"l2_chunk_by_file"` // L2: Enable chunking by file (default: true)
+	L3DiffOnly        bool               `yaml:"l3_diff_only"`     // L3: Fallback to diff only (default: true)
+	L2MaxFailureRatio float64            `yaml:"l2_max_failure_ratio"`
+	L2FailFast        bool               `yaml:"l2_fail_fast"`
+	CommentMerge      CommentMergeConfig `yaml:"comment_merge"` // Passed down for chunk deduplication
 }
 
 // GetLogLevel returns the slog.Level based on Log.Level string
@@ -224,6 +225,7 @@ func LoadConfig() *Config {
 	cfg.Pipeline.Stage3Review.Degradation.L3DiffOnly = true
 	cfg.Pipeline.Stage3Review.Degradation.L2MaxFailureRatio = 0.5
 	cfg.Pipeline.Stage3Review.Degradation.L2FailFast = false
+	cfg.Pipeline.Stage3Review.Degradation.CommentMerge = cfg.Pipeline.CommentMerge // Pass down defaults
 	cfg.Pipeline.CommentMerge.Enabled = true
 	cfg.Pipeline.CommentMerge.HighSeverityMerge = "by_file"
 	cfg.Pipeline.CommentMerge.LowSeverityMerge = "to_summary"

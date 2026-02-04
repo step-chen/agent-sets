@@ -168,8 +168,17 @@ func (cr *ChunkReviewer) ReviewChunked(
 		}
 
 		successCount++
+
 		// Merge Results
 		aggregatedResult.Comments = append(aggregatedResult.Comments, res.Comments...)
+
+		// Deduplicate and merge comments after each chunk
+		// Note: We use a default config here because ChunkReviewer doesn't have the full pipeline config yet
+		// Ideally, this should be passed in. For now, let's assume standard behavior or add config.
+		// BETTER: Add CommentMergeConfig to ChunkReviewer struct.
+		merger := NewCommentMerger(cr.cfg.CommentMerge)
+		aggregatedResult.Comments, _ = merger.Merge(aggregatedResult.Comments)
+
 		aggregatedResult.Score += res.Score // We need to average this later
 		aggregatedResult.Summary += fmt.Sprintf("### Chunk %d\n%s\n\n", i+1, res.Summary)
 	}
