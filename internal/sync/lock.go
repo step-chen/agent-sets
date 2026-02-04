@@ -38,10 +38,3 @@ func (l *KeyLock) Unlock(key string) {
 	// To strictly prevent memory growth, one would need ref counting.
 	// Given "Simplicity", keeping the Map entry is acceptable acceptable unless millions of unique PRs.
 }
-
-// TryLock attempts to acquire the lock, returning true if successful
-func (l *KeyLock) TryLock(key string) bool {
-	val, _ := l.locks.LoadOrStore(key, &sync.Mutex{})
-	mu := val.(*sync.Mutex)
-	return mu.TryLock()
-}

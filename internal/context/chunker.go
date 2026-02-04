@@ -3,7 +3,7 @@ package context
 import (
 	"log/slog"
 
-	sitter "github.com/smacker/go-tree-sitter"
+	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
 // extractChunks extracts semantic chunks (functions, methods) from the source code
@@ -27,7 +27,7 @@ func (e *ContextEngine) extractChunks(tree *sitter.Tree, source []byte, ext stri
 		return []Chunk{}
 	}
 
-	q, err := sitter.NewQuery([]byte(queryStr), lang)
+	q, err := sitter.NewQuery(lang, queryStr)
 	if err != nil {
 		slog.Error("Failed to create tree-sitter query for chunking", "lang", ext, "error", err)
 		return []Chunk{}
@@ -37,16 +37,10 @@ func (e *ContextEngine) extractChunks(tree *sitter.Tree, source []byte, ext stri
 	cursor := sitter.NewQueryCursor()
 	defer cursor.Close()
 
-	cursor.Exec(q, tree.RootNode())
-
+	iter := cursor.Matches(q, tree.RootNode(), source)
 	var chunks []Chunk
 
-	for {
-		match, ok := cursor.NextMatch()
-		if !ok {
-			break
-		}
-
+	for match := iter.Next(); match != nil; match = iter.Next() {
 		// Since we have multiple captures (@name, @body), we need to handle them within the match
 		// The query is structured so that one match corresponds to one function/method
 		// But in tree-sitter-go matches, captures are grouped.
@@ -60,43 +54,48 @@ func (e *ContextEngine) extractChunks(tree *sitter.Tree, source []byte, ext stri
 
 		// Iterate captures in the match
 		for _, capture := range match.Captures {
-			name := q.CaptureNameForId(capture.Index)
+			name := q.CaptureNames()[capture.Index]
 
 			// Go style: capture entire node
 			if name == "function" {
-				bodyNode = capture.Node
+				bodyNode = &capture.Node
 				chunkType = "function"
 				nameNode = bodyNode.ChildByFieldName("name")
 			} else if name == "method" {
-				bodyNode = capture.Node
+				bodyNode = &capture.Node
 				chunkType = "method"
-				nameNode = bodyNode.ChildByFieldName("name")
 			} else if name == "class" {
-				bodyNode = capture.Node
+				bodyNode = &capture.Node
 				chunkType = "class"
 				nameNode = bodyNode.ChildByFieldName("name")
 			} else if name == "body" {
 				// C++ style: body captured separately
-				bodyNode = capture.Node
+				bodyNode = &capture.Node
 				chunkType = "function"
 			} else if name == "name" {
 				// C++ style: name captured separately
-				nameNode = capture.Node
+				nameNode = &capture.Node
+			} else if name == "func_name.name" { // Python/Java
+				nameNode = &capture.Node
+			} else if name == "func.body" {
+				// Specific for cases where we capture body separately
+				bodyNode = &capture.Node
+				chunkType = "function"
 			}
 		}
 
 		if bodyNode != nil {
 			var chunk Chunk
-			chunk.Content = bodyNode.Content(source)
-			chunk.StartLine = int(bodyNode.StartPoint().Row) + 1
-			chunk.EndLine = int(bodyNode.EndPoint().Row) + 1
+			chunk.Content = bodyNode.Utf8Text(source)
+			chunk.StartLine = int(bodyNode.StartPosition().Row) + 1
+			chunk.EndLine = int(bodyNode.EndPosition().Row) + 1
 			chunk.Type = chunkType
 			if chunk.Type == "" {
 				chunk.Type = "function"
 			}
 
 			if nameNode != nil {
-				chunk.Name = nameNode.Content(source)
+				chunk.Name = nameNode.Utf8Text(source)
 			} else {
 				chunk.Name = "anonymous"
 			}

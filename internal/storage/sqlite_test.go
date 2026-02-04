@@ -59,21 +59,13 @@ func TestSQLiteRepository(t *testing.T) {
 		t.Fatalf("SaveReview failed: %v", err)
 	}
 
-	// Test Get
-	saved, err := repo.GetReview(ctx, record.ID)
+	// Verify directly via DB since GetReview was removed (it's write-only audit log)
+	var count int
+	err = repo.db.QueryRow("SELECT COUNT(*) FROM reviews WHERE id = ?", record.ID).Scan(&count)
 	if err != nil {
-		t.Fatalf("GetReview failed: %v", err)
+		t.Fatalf("failed to query db: %v", err)
 	}
-
-	if saved.ID != record.ID {
-		t.Errorf("expected ID %s, got %s", record.ID, saved.ID)
-	}
-	if saved.PullRequest.ID != pr.ID {
-		t.Errorf("expected PR ID %s, got %s", pr.ID, saved.PullRequest.ID)
-	}
-	// Verify result
-	// Note: Score might be missing, check Summary
-	if saved.Result.Summary != result.Summary {
-		t.Errorf("expected summary %s, got %s", result.Summary, saved.Result.Summary)
+	if count != 1 {
+		t.Errorf("expected 1 record, got %d", count)
 	}
 }

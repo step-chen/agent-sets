@@ -7,12 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unsafe"
 
-	sitter "github.com/smacker/go-tree-sitter"
-	"github.com/smacker/go-tree-sitter/cpp"
-	"github.com/smacker/go-tree-sitter/golang"
-	"github.com/smacker/go-tree-sitter/java"
-	"github.com/smacker/go-tree-sitter/python"
+	sitter "github.com/tree-sitter/go-tree-sitter"
+	tree_sitter_cpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
+	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
+	tree_sitter_java "github.com/tree-sitter/tree-sitter-java/bindings/go"
+	tree_sitter_python "github.com/tree-sitter/tree-sitter-python/bindings/go"
 )
 
 // ContextEngine handles semantic analysis of code files using Tree-sitter
@@ -66,16 +67,16 @@ func NewContextEngine() *ContextEngine {
 			},
 		},
 		grammars: map[string]*sitter.Language{
-			".go":   golang.GetLanguage(),
-			".cpp":  cpp.GetLanguage(),
-			".cc":   cpp.GetLanguage(),
-			".cxx":  cpp.GetLanguage(),
-			".c":    cpp.GetLanguage(),
-			".h":    cpp.GetLanguage(),
-			".hpp":  cpp.GetLanguage(),
-			".hxx":  cpp.GetLanguage(),
-			".py":   python.GetLanguage(),
-			".java": java.GetLanguage(),
+			".go":   sitter.NewLanguage(unsafe.Pointer(tree_sitter_go.Language())),
+			".cpp":  sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
+			".cc":   sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
+			".cxx":  sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
+			".c":    sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
+			".h":    sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
+			".hpp":  sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
+			".hxx":  sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
+			".py":   sitter.NewLanguage(unsafe.Pointer(tree_sitter_python.Language())),
+			".java": sitter.NewLanguage(unsafe.Pointer(tree_sitter_java.Language())),
 		},
 	}
 }
@@ -102,9 +103,9 @@ func (e *ContextEngine) Analyze(ctx context.Context, path string, source []byte)
 	parser.SetLanguage(lang)
 
 	// Parse
-	tree, err := parser.ParseCtx(ctx, nil, source)
-	if err != nil {
-		return nil, fmt.Errorf("tree-sitter parse failed: %w", err)
+	tree := parser.ParseCtx(ctx, source, nil)
+	if tree == nil {
+		return nil, fmt.Errorf("tree-sitter parse failed")
 	}
 	defer tree.Close() // Tree must be closed to free C memory
 

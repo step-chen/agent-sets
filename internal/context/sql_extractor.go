@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"strings"
 
-	sitter "github.com/smacker/go-tree-sitter"
+	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
 // extractSQL extracts embedded SQL logic and file references
@@ -28,7 +28,7 @@ func (e *ContextEngine) extractSQL(tree *sitter.Tree, source []byte, ext string)
 		return []SQLReference{}
 	}
 
-	q, err := sitter.NewQuery([]byte(queryStr), lang)
+	q, err := sitter.NewQuery(lang, queryStr)
 	if err != nil {
 		slog.Error("Failed to create tree-sitter query for SQL extraction", "lang", ext, "error", err)
 		return []SQLReference{}
@@ -38,22 +38,18 @@ func (e *ContextEngine) extractSQL(tree *sitter.Tree, source []byte, ext string)
 	cursor := sitter.NewQueryCursor()
 	defer cursor.Close()
 
-	cursor.Exec(q, tree.RootNode())
+	iter := cursor.Matches(q, tree.RootNode(), source)
 
 	var refs []SQLReference
 
-	for {
-		match, ok := cursor.NextMatch()
-		if !ok {
-			break
-		}
+	for match := iter.Next(); match != nil; match = iter.Next() {
 
 		for _, capture := range match.Captures {
 			node := capture.Node
 			// We captured a call_expression
 
 			// Extract function Name
-			funcName := extractFunctionName(node, source, ext)
+			funcName := extractFunctionName(&node, source, ext)
 			if funcName == "" {
 				continue
 			}
@@ -75,9 +71,9 @@ func (e *ContextEngine) extractSQL(tree *sitter.Tree, source []byte, ext string)
 			}
 
 			childCount := argsNode.ChildCount()
-			for i := uint32(0); i < childCount; i++ {
-				arg := argsNode.Child(int(i))
-				content := arg.Content(source)
+			for i := uint(0); i < childCount; i++ {
+				arg := argsNode.Child(i)
+				content := arg.Utf8Text(source)
 
 				// Clean string
 				if strings.HasPrefix(content, "\"") || strings.HasPrefix(content, "`") {
@@ -89,7 +85,7 @@ func (e *ContextEngine) extractSQL(tree *sitter.Tree, source []byte, ext string)
 						refs = append(refs, SQLReference{
 							Type:    "embedded",
 							Content: clean,
-							Line:    int(arg.StartPoint().Row) + 1,
+							Line:    int(arg.StartPosition().Row) + 1,
 						})
 					}
 
@@ -98,7 +94,7 @@ func (e *ContextEngine) extractSQL(tree *sitter.Tree, source []byte, ext string)
 						refs = append(refs, SQLReference{
 							Type:    "file_ref",
 							Content: clean,
-							Line:    int(arg.StartPoint().Row) + 1,
+							Line:    int(arg.StartPosition().Row) + 1,
 						})
 					}
 				}
@@ -113,7 +109,7 @@ func extractFunctionName(callNode *sitter.Node, source []byte, ext string) strin
 		// Java: method_invocation -> name
 		nameNode := callNode.ChildByFieldName("name")
 		if nameNode != nil {
-			return nameNode.Content(source)
+			return nameNode.Utf8Text(source)
 		}
 		return ""
 	}
@@ -125,28 +121,28 @@ func extractFunctionName(callNode *sitter.Node, source []byte, ext string) strin
 	}
 
 	// If it's a selector expression (Go), we want the method name (right side)
-	if ext == ".go" && funcNode.Type() == "selector_expression" {
+	if ext == ".go" && funcNode.Kind() == "selector_expression" {
 		field := funcNode.ChildByFieldName("field")
 		if field != nil {
-			return field.Content(source)
+			return field.Utf8Text(source)
 		}
-	} else if ext == ".cpp" && funcNode.Type() == "field_expression" {
+	} else if ext == ".cpp" && funcNode.Kind() == "field_expression" {
 		// C++: obj.method() -> field_expression
 		field := funcNode.ChildByFieldName("field")
 		if field != nil {
-			return field.Content(source)
+			return field.Utf8Text(source)
 		}
-	} else if ext == ".py" && funcNode.Type() == "attribute" {
+	} else if ext == ".py" && funcNode.Kind() == "attribute" {
 		// Python: obj.method() -> attribute
 		// function field of call is the attribute node itself
 		attr := funcNode.ChildByFieldName("attribute")
 		if attr != nil {
-			return attr.Content(source)
+			return attr.Utf8Text(source)
 		}
 	}
 
 	// Fallback to full content (simple calls)
-	return funcNode.Content(source)
+	return funcNode.Utf8Text(source)
 }
 
 func isDBRelatedInfo(name string) bool {

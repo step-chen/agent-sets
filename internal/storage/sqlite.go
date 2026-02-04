@@ -5,11 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"pr-review-automation/internal/domain"
-	"time"
 
-	_ "modernc.org/sqlite" // Pure Go driver, CGO-free, compatible with CGO_ENABLED=0
+	_ "github.com/mattn/go-sqlite3" // CGO driver, high performance
 )
 
 type SQLiteRepository struct {
@@ -17,7 +14,7 @@ type SQLiteRepository struct {
 }
 
 func NewSQLiteRepository(dsn string) (*SQLiteRepository, error) {
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -80,96 +77,6 @@ func (r *SQLiteRepository) SaveReview(ctx context.Context, record *ReviewRecord)
 	return err
 }
 
-func (r *SQLiteRepository) GetReview(ctx context.Context, id string) (*ReviewRecord, error) {
-	row := r.db.QueryRowContext(ctx, `
-        SELECT id, pr_data, result_data, created_at, duration_ms, status
-        FROM reviews WHERE id = ?
-    `, id)
-	return scanReview(row)
-}
-
-func (r *SQLiteRepository) ListReviewsByPR(ctx context.Context, projectKey, repoSlug, prID string) ([]*ReviewRecord, error) {
-	rows, err := r.db.QueryContext(ctx, `
-        SELECT id, pr_data, result_data, created_at, duration_ms, status
-        FROM reviews 
-        WHERE project_key = ? AND repo_slug = ? AND pr_id = ?
-        ORDER BY created_at DESC
-    `, projectKey, repoSlug, prID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var reviews []*ReviewRecord
-	for rows.Next() {
-		record, err := scanReview(rows)
-		if err != nil {
-			slog.Warn("scan review failed", "error", err)
-			continue
-		}
-		reviews = append(reviews, record)
-	}
-	return reviews, rows.Err()
-}
-
-func (r *SQLiteRepository) ListRecentReviews(ctx context.Context, limit int) ([]*ReviewRecord, error) {
-	rows, err := r.db.QueryContext(ctx, `
-        SELECT id, pr_data, result_data, created_at, duration_ms, status
-        FROM reviews 
-        ORDER BY created_at DESC
-        LIMIT ?
-    `, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var reviews []*ReviewRecord
-	for rows.Next() {
-		record, err := scanReview(rows)
-		if err != nil {
-			slog.Warn("scan review failed", "error", err)
-			continue
-		}
-		reviews = append(reviews, record)
-	}
-	return reviews, rows.Err()
-}
-
 func (r *SQLiteRepository) Close() error {
 	return r.db.Close()
-}
-
-// Scanner interface to support both Row and Rows
-type Scanner interface {
-	Scan(dest ...any) error
-}
-
-func scanReview(s Scanner) (*ReviewRecord, error) {
-	var id, prData, resultData, status string
-	var createdAt time.Time
-	var durationMs int64
-
-	if err := s.Scan(&id, &prData, &resultData, &createdAt, &durationMs, &status); err != nil {
-		return nil, err
-	}
-
-	var pr domain.PullRequest
-	if err := json.Unmarshal([]byte(prData), &pr); err != nil {
-		return nil, fmt.Errorf("unmarshal pr: %w", err)
-	}
-
-	var result domain.ReviewResult
-	if err := json.Unmarshal([]byte(resultData), &result); err != nil {
-		return nil, fmt.Errorf("unmarshal result: %w", err)
-	}
-
-	return &ReviewRecord{
-		ID:          id,
-		PullRequest: &pr,
-		Result:      &result,
-		CreatedAt:   createdAt,
-		DurationMs:  durationMs,
-		Status:      status,
-	}, nil
 }

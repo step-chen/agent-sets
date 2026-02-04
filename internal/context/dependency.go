@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"strings"
 
-	sitter "github.com/smacker/go-tree-sitter"
+	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
 // extractDependencies implementation
@@ -28,7 +28,7 @@ func (e *ContextEngine) extractDependencies(tree *sitter.Tree, source []byte, ex
 		return []Dependency{}
 	}
 
-	q, err := sitter.NewQuery([]byte(queryStr), lang)
+	q, err := sitter.NewQuery(lang, queryStr)
 	if err != nil {
 		slog.Error("Failed to create tree-sitter query", "lang", ext, "error", err)
 		return []Dependency{}
@@ -38,26 +38,21 @@ func (e *ContextEngine) extractDependencies(tree *sitter.Tree, source []byte, ex
 	cursor := sitter.NewQueryCursor()
 	defer cursor.Close()
 
-	cursor.Exec(q, tree.RootNode())
+	iter := cursor.Matches(q, tree.RootNode(), source)
 
 	var deps []Dependency
 	seen := make(map[string]bool)
 
-	for {
-		match, ok := cursor.NextMatch()
-		if !ok {
-			break
-		}
-
+	for match := iter.Next(); match != nil; match = iter.Next() {
 		for _, capture := range match.Captures {
 			// Check capture name is "path"
-			name := q.CaptureNameForId(capture.Index)
+			name := q.CaptureNames()[capture.Index]
 			if name != "path" {
 				continue
 			}
 
 			node := capture.Node
-			rawText := node.Content(source)
+			rawText := node.Utf8Text(source)
 			cleanPath := cleanPathString(rawText)
 
 			if seen[cleanPath] {
@@ -68,7 +63,7 @@ func (e *ContextEngine) extractDependencies(tree *sitter.Tree, source []byte, ex
 			deps = append(deps, Dependency{
 				Path:   cleanPath,
 				Type:   determineImportType(ext, rawText),
-				Line:   int(node.StartPoint().Row) + 1,
+				Line:   int(node.StartPosition().Row) + 1,
 				Source: rawText,
 			})
 		}
