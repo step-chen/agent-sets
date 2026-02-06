@@ -3,13 +3,15 @@ package processor
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"pr-review-automation/internal/config"
 	"pr-review-automation/internal/domain"
 	"pr-review-automation/internal/syncutil"
-	"strings"
 )
 
 // MockReviewer mocks the Reviewer interface
@@ -38,6 +40,15 @@ func (m *MockCommenter) CallTool(ctx context.Context, serverName, toolName strin
 		return `{"values": []}`, nil
 	}
 	return nil, nil // Default
+}
+
+func getTestPromptsDir(t *testing.T) string {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	// internal/processor -> root is ../..
+	return filepath.Join(wd, "../../prompts")
 }
 
 func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
@@ -97,7 +108,7 @@ index 123..456 100644
 	tracker := syncutil.NewTracker()
 	cfg := &config.Config{
 		Prompts: config.PromptsConfig{
-			Dir: "/home/stephen/workspace/agent-sets/prompts",
+			Dir: getTestPromptsDir(t),
 		},
 		MCP: config.MCPConfig{
 			Bitbucket: config.MCPServerConfig{
@@ -149,7 +160,7 @@ func TestPRProcessor_ProcessPullRequest_ReviewFail(t *testing.T) {
 	tracker := syncutil.NewTracker()
 	cfg := &config.Config{
 		Prompts: config.PromptsConfig{
-			Dir: "/home/stephen/workspace/agent-sets/prompts",
+			Dir: getTestPromptsDir(t),
 		},
 	}
 	p, err := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
@@ -204,7 +215,7 @@ func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
 			},
 		},
 		Prompts: config.PromptsConfig{
-			Dir: "/home/stephen/workspace/agent-sets/prompts",
+			Dir: getTestPromptsDir(t),
 		},
 		MCP: config.MCPConfig{
 			Bitbucket: config.MCPServerConfig{
@@ -292,7 +303,7 @@ index 123..456 100644
 			},
 		},
 		Prompts: config.PromptsConfig{
-			Dir: "/home/stephen/workspace/agent-sets/prompts",
+			Dir: getTestPromptsDir(t),
 		},
 		MCP: config.MCPConfig{
 			Bitbucket: config.MCPServerConfig{
