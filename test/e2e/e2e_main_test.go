@@ -146,7 +146,7 @@ func TestE2E_Main(t *testing.T) {
 	// 4. Setup MCP Client with Interceptor
 	mcpClient := client.NewMCPClient(cfg)
 	// Inject Response Filter
-	bbResponseFilter := bitbucket.NewResponseFilter(20000)
+	bbResponseFilter := bitbucket.NewResponseFilter(20000, cfg.MCP.Bitbucket.Tools)
 	mcpClient.SetResponseFilter("bitbucket", bbResponseFilter)
 
 	mcpClient.SetTransportFactory(func(ctx context.Context, endpoint, token, authHeader string, timeout time.Duration) (mcp.Transport, error) {
@@ -170,7 +170,7 @@ func TestE2E_Main(t *testing.T) {
 					return nil
 				}
 
-				if params.Name == config.ToolBitbucketAddComment {
+				if params.Name == cfg.MCP.Bitbucket.GetTool(config.ToolKeyAddComment) {
 					// Identify which test file this request belongs to using PR ID
 					args := params.Arguments
 					projectKey := fmt.Sprintf("%v", args["projectKey"])

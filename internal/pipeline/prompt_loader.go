@@ -63,20 +63,29 @@ type PromptData struct {
 }
 
 // NewPromptData creates a new PromptData with values from config
-func NewPromptData() PromptData {
+func NewPromptData(tools map[string]string) PromptData {
 	return PromptData{
-		ToolBitbucketGetDiff:        config.ToolBitbucketGetDiff,
-		ToolBitbucketGetComments:    config.ToolBitbucketGetComments,
-		ToolBitbucketAddComment:     config.ToolBitbucketAddComment,
-		ToolBitbucketGetChanges:     config.ToolBitbucketGetChanges,
-		ToolBitbucketGetFileContent: config.ToolBitbucketGetFileContent,
-		ToolBitbucketGetPullRequest: config.ToolBitbucketGetPullRequest,
+		ToolBitbucketGetDiff:        tools[config.ToolKeyGetDiff],
+		ToolBitbucketGetComments:    tools[config.ToolKeyGetComments],
+		ToolBitbucketAddComment:     tools[config.ToolKeyAddComment],
+		ToolBitbucketGetChanges:     tools[config.ToolKeyGetChanges],
+		ToolBitbucketGetFileContent: tools[config.ToolKeyGetFileContent],
+		ToolBitbucketGetPullRequest: tools[config.ToolKeyGetPullRequest],
 	}
 }
 
 func (l *PromptLoader) render(ctx context.Context, tmplContent string, extraData map[string]interface{}) (string, error) {
 	_ = ctx
-	data := NewPromptData()
+
+	// Extract tools map
+	var tools map[string]string
+	if t, ok := extraData["Tools"]; ok {
+		if tm, ok := t.(map[string]string); ok {
+			tools = tm
+		}
+	}
+
+	data := NewPromptData(tools)
 	if val, ok := extraData["ProjectKey"].(string); ok {
 		data.ProjectKey = val
 	}

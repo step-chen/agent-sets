@@ -219,7 +219,7 @@ func (s *Stage2) fetchFileContent(ctx context.Context, pr domain.PullRequest, pa
 
 	// Arguments for bitbucket_get_file_content: projectKey, repoSlug, path, at (commit)
 
-	result, err := s.mcpClient.CallTool(ctx, config.MCPServerBitbucket, "bitbucket_get_file_content", map[string]interface{}{
+	result, err := s.mcpClient.CallToolByKey(ctx, config.MCPServerBitbucket, config.ToolKeyGetFileContent, map[string]interface{}{
 		"projectKey": pr.ProjectKey,
 		"repoSlug":   pr.RepoSlug,
 		"path":       path,

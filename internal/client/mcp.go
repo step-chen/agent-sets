@@ -19,6 +19,8 @@ import (
 type TransportFactory func(ctx context.Context, endpoint, token, authHeader string, timeout time.Duration) (mcp.Transport, error)
 
 // MCPClient manages connections to MCP servers
+
+// MCPClient manages connections to MCP servers
 type MCPClient struct {
 	cfg             *config.Config
 	transports      map[string]mcp.Transport
@@ -87,6 +89,7 @@ func (c *MCPClient) InitializeConnections() error {
 			token:        serverCfg.Token,
 			authHeader:   serverCfg.AuthHeader,
 			allowedTools: serverCfg.AllowedTools,
+			tools:        serverCfg.Tools,
 		}
 		c.mu.Unlock()
 
@@ -107,6 +110,12 @@ func (c *MCPClient) InitializeConnections() error {
 			}
 
 			for _, fCfg := range serverCfg.ResponseFilters {
+				// Inject tools into filter options
+				if fCfg.Options == nil {
+					fCfg.Options = make(map[string]interface{})
+				}
+				fCfg.Options["tools"] = serverCfg.Tools
+
 				f, err := filter.Create(fCfg.Name, fCfg.Options)
 				if err != nil {
 					slog.Error("failed to create filter", "filter", fCfg.Name, "error", err)

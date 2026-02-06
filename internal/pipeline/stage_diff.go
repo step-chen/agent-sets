@@ -49,7 +49,7 @@ func (s *Stage1) ExtractDiffs(ctx context.Context, req ReviewRequest) ([]FileCha
 		return nil, fmt.Errorf("invalid pull request ID: %w", err)
 	}
 
-	diffResult, err := s.mcpClient.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetDiff, map[string]interface{}{
+	diffResult, err := s.mcpClient.CallToolByKey(ctx, config.MCPServerBitbucket, config.ToolKeyGetDiff, map[string]interface{}{
 		"projectKey":    req.PR.ProjectKey,
 		"repoSlug":      req.PR.RepoSlug,
 		"pullRequestId": prID,

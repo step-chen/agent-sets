@@ -10,14 +10,17 @@ import (
 )
 
 // ResponseFilter filters Bitbucket MCP tool responses
+// ResponseFilter filters Bitbucket MCP tool responses
 type ResponseFilter struct {
 	MaxStringLen int
+	Tools        map[string]string // Semantic Key -> Actual Tool Name
 }
 
 // NewResponseFilter creates a new Bitbucket ResponseFilter
-func NewResponseFilter(maxStringLen int) *ResponseFilter {
+func NewResponseFilter(maxStringLen int, tools map[string]string) *ResponseFilter {
 	return &ResponseFilter{
 		MaxStringLen: maxStringLen,
+		Tools:        tools,
 	}
 }
 
@@ -30,14 +33,23 @@ func (f *ResponseFilter) Filter(toolName string, response any) any {
 
 	var filteredBytes []byte
 
-	switch toolName {
-	case config.ToolBitbucketGetComments:
+	// Resolve semantic key for toolName (Reverse Lookup)
+	var semanticKey string
+	for k, v := range f.Tools {
+		if v == toolName {
+			semanticKey = k
+			break
+		}
+	}
+
+	switch semanticKey {
+	case config.ToolKeyGetComments:
 		filteredBytes = f.filterComments(jsonBytes)
-	case config.ToolBitbucketGetPullRequest:
+	case config.ToolKeyGetPullRequest:
 		filteredBytes = f.filterPullRequest(jsonBytes)
-	case config.ToolBitbucketGetChanges:
+	case config.ToolKeyGetChanges:
 		filteredBytes = f.filterChanges(jsonBytes)
-	case config.ToolBitbucketGetFileContent:
+	case config.ToolKeyGetFileContent:
 		filteredBytes = f.filterLongStrings(jsonBytes, f.MaxStringLen)
 	default:
 		// Generic long string filter for any other unknown tool (including GetDiff)

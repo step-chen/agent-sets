@@ -58,10 +58,10 @@ type ToolInvoker interface {
 
 // FetchChangedFiles retrieves the list of changed file paths from the PR.
 // Returns empty slice on error (falls back to default language).
-func FetchChangedFiles(ctx context.Context, invoker ToolInvoker, pr domain.PullRequest) []string {
+func FetchChangedFiles(ctx context.Context, invoker ToolInvoker, toolName string, pr domain.PullRequest) []string {
 	// pr.ID is string, converting to int for MCP
 	prID, _ := strconv.Atoi(pr.ID)
-	result, err := invoker.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetChanges, map[string]interface{}{
+	result, err := invoker.CallTool(ctx, config.MCPServerBitbucket, toolName, map[string]interface{}{
 		"projectKey":    pr.ProjectKey,
 		"repoSlug":      pr.RepoSlug,
 		"pullRequestId": prID,

@@ -147,3 +147,44 @@ func TestCommentMerger_FormatWithLinks(t *testing.T) {
 		t.Errorf("summary missing expected location link.\nGot: %s\nExpected: %s", output, expectedLocationLink)
 	}
 }
+func TestCommentMerger_FormatSummaryAddons_ConfidenceColumn(t *testing.T) {
+	cfg := &config.CommentMergeConfig{Enabled: true}
+	// Use a dummy Web URL just for link generation
+	webURL := "https://bitbucket.example.com/pr/1"
+
+	// Case 1: showConfidence = true
+	// We construct a simplified Addons template that just joins column values with pipes
+	tmplWithConf := &CommentTemplates{
+		Addons: template.Must(template.New("addons").Parse(
+			"{{range .TableData.Rows}}{{index . 0}}|{{index . 1}}|{{index . 2}}\n{{end}}")),
+	}
+	mergerWithConf := NewCommentMerger(cfg, webURL, tmplWithConf, true)
+	comments := []domain.ReviewComment{
+		{File: "a.go", Line: 10, Confidence: 0.75, Comment: "Check this"},
+	}
+	output := mergerWithConf.FormatSummaryAddons(comments)
+
+	// Expected format: Link|75%|Check this
+	if !strings.Contains(output, "75%") {
+		t.Errorf("expected confidence column (75%%), got: %s", output)
+	}
+	if !strings.Contains(output, "Check this") {
+		t.Errorf("expected suggestion 'Check this', got: %s", output)
+	}
+
+	// Case 2: showConfidence = false
+	tmplNoConf := &CommentTemplates{
+		Addons: template.Must(template.New("addons").Parse(
+			"{{range .TableData.Rows}}{{index . 0}}|{{index . 1}}\n{{end}}")),
+	}
+	mergerNoConf := NewCommentMerger(cfg, webURL, tmplNoConf, false)
+	output2 := mergerNoConf.FormatSummaryAddons(comments)
+
+	// Expected format: Link|Check this
+	if strings.Contains(output2, "75%") {
+		t.Errorf("expected no confidence column, got: %s", output2)
+	}
+	if !strings.Contains(output2, "Check this") {
+		t.Errorf("expected suggestion 'Check this', got: %s", output2)
+	}
+}

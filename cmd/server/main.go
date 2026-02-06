@@ -78,7 +78,7 @@ func main() {
 
 	// Initialize Filters
 	bbPayloadFilter := bitbucket.NewPayloadFilter()
-	bbResponseFilter := bitbucket.NewResponseFilter(cfg.Pipeline.ResponseMaxStringLen)
+	bbResponseFilter := bitbucket.NewResponseFilter(cfg.Pipeline.ResponseMaxStringLen, cfg.MCP.Bitbucket.Tools)
 
 	// Register filters with MCP Client
 	mcpClient.SetResponseFilter("bitbucket", bbResponseFilter)

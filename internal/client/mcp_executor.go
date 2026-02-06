@@ -10,6 +10,24 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// CallToolByKey calls a tool using its semantic key (e.g., "get_diff") resolving to the configured tool name
+func (c *MCPClient) CallToolByKey(ctx context.Context, serverName, toolKey string, args map[string]interface{}) (any, error) {
+	c.mu.RLock()
+	info, ok := c.endpoints[serverName]
+	c.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("mcp server not configured: %s", serverName)
+	}
+
+	toolName := info.tools[toolKey]
+	if toolName == "" {
+		return nil, fmt.Errorf("tool key %q not configured for server %s", toolKey, serverName)
+	}
+
+	return c.CallTool(ctx, serverName, toolName, args)
+}
+
 // CallTool calls a tool on a specific MCP server with retry logic
 func (c *MCPClient) CallTool(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
 	slog.Debug("call tool", "server", serverName, "tool", toolName)

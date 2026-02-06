@@ -24,11 +24,33 @@ type WebhookConfig struct {
 
 // MCPServerConfig holds configuration for a single MCP server
 type MCPServerConfig struct {
-	Endpoint        string         `yaml:"endpoint"`
-	Token           string         `yaml:"-"`                // From Env
-	AuthHeader      string         `yaml:"auth_header"`      // Header name to use for token, e.g. "Bitbucket-Token"
-	AllowedTools    []string       `yaml:"allowed_tools"`    // Whitelist of tools to expose
-	ResponseFilters []FilterConfig `yaml:"response_filters"` // Output filters
+	Endpoint        string            `yaml:"endpoint"`
+	Token           string            `yaml:"-"`                // From Env
+	AuthHeader      string            `yaml:"auth_header"`      // Header name to use for token, e.g. "Bitbucket-Token"
+	AllowedTools    []string          `yaml:"allowed_tools"`    // Whitelist of tools to expose
+	ResponseFilters []FilterConfig    `yaml:"response_filters"` // Output filters
+	Tools           map[string]string `yaml:"tools"`            // REQUIRED: semantic key -> actual name
+}
+
+// GetTool returns the actual tool name for a semantic key
+func (c *MCPServerConfig) GetTool(key string) string {
+	if c.Tools == nil {
+		return ""
+	}
+	return c.Tools[key]
+}
+
+// ValidateTools checks if required tools are configured
+func (c *MCPServerConfig) ValidateTools(serverName string) error {
+	if c.Tools == nil {
+		return fmt.Errorf("%s: tools config is required", serverName)
+	}
+	for _, key := range RequiredToolKeys {
+		if c.Tools[key] == "" {
+			return fmt.Errorf("%s: missing required tool mapping: %s", serverName, key)
+		}
+	}
+	return nil
 }
 
 type FilterConfig struct {
@@ -81,21 +103,7 @@ type Config struct {
 		Timeout  time.Duration `yaml:"timeout"`
 	} `yaml:"backup_llm"`
 
-	MCP struct {
-		Timeout time.Duration `yaml:"timeout"`
-		Retry   struct {
-			Attempts   int           `yaml:"attempts"`
-			Backoff    time.Duration `yaml:"backoff"`
-			MaxBackoff time.Duration `yaml:"max_backoff"`
-		} `yaml:"retry"`
-		CircuitBreaker struct {
-			FailureThreshold int           `yaml:"failure_threshold"`
-			OpenDuration     time.Duration `yaml:"open_duration"`
-		} `yaml:"circuit_breaker"`
-		Bitbucket  MCPServerConfig `yaml:"bitbucket"`
-		Jira       MCPServerConfig `yaml:"jira"`
-		Confluence MCPServerConfig `yaml:"confluence"`
-	} `yaml:"mcp"`
+	MCP MCPConfig `yaml:"mcp"`
 
 	Prompts PromptsConfig `yaml:"prompts"`
 
@@ -104,6 +112,22 @@ type Config struct {
 	Pipeline PipelineConfig `yaml:"pipeline"`
 
 	Storage StorageConfig `yaml:"storage"`
+}
+
+type MCPConfig struct {
+	Timeout time.Duration `yaml:"timeout"`
+	Retry   struct {
+		Attempts   int           `yaml:"attempts"`
+		Backoff    time.Duration `yaml:"backoff"`
+		MaxBackoff time.Duration `yaml:"max_backoff"`
+	} `yaml:"retry"`
+	CircuitBreaker struct {
+		FailureThreshold int           `yaml:"failure_threshold"`
+		OpenDuration     time.Duration `yaml:"open_duration"`
+	} `yaml:"circuit_breaker"`
+	Bitbucket  MCPServerConfig `yaml:"bitbucket"`
+	Jira       MCPServerConfig `yaml:"jira"`
+	Confluence MCPServerConfig `yaml:"confluence"`
 }
 
 // StorageConfig holds configuration for review persistence
@@ -304,6 +328,12 @@ func (c *Config) Validate() error {
 	// At least one MCP endpoint should be configured
 	if c.MCP.Bitbucket.Endpoint == "" && c.MCP.Jira.Endpoint == "" && c.MCP.Confluence.Endpoint == "" {
 		errs = append(errs, "at least one MCP endpoint must be configured")
+	}
+
+	if c.MCP.Bitbucket.Endpoint != "" {
+		if err := c.MCP.Bitbucket.ValidateTools("bitbucket"); err != nil {
+			errs = append(errs, err.Error())
+		}
 	}
 
 	if len(errs) > 0 {

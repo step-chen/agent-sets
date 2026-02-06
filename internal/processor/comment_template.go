@@ -144,4 +144,5 @@ type InlineTemplateData struct {
 // AddonsTemplateData for addons.tmpl
 type AddonsTemplateData struct {
 	TableData
+	ShowConfidence bool
 }

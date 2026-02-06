@@ -141,7 +141,8 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 	// Call bitbucket_get_pull_request_comments
 	// Convert PR ID to int
 	prID, _ := strconv.Atoi(pr.ID)
-	result, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetComments, map[string]interface{}{
+	toolName := p.cfg.MCP.Bitbucket.GetTool(config.ToolKeyGetComments)
+	result, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, toolName, map[string]interface{}{
 		"projectKey":    pr.ProjectKey,
 		"repoSlug":      pr.RepoSlug,
 		"pullRequestId": prID,

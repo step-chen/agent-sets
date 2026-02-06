@@ -72,7 +72,8 @@ func (p *PRProcessor) postMergedComments(ctx context.Context, pr *domain.PullReq
 		}
 
 		slog.Debug("post merged file comment", "file", fc.FilePath)
-		_, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketAddComment, args)
+		toolName := p.cfg.MCP.Bitbucket.GetTool(config.ToolKeyAddComment)
+		_, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, toolName, args)
 		if err != nil {
 			slog.Error("post merged comment failed", "file", fc.FilePath, "error", err)
 			metrics.CommentPostFailures.WithLabelValues("api_error").Inc()
@@ -165,7 +166,8 @@ func (p *PRProcessor) postIndividualComments(ctx context.Context, pr *domain.Pul
 			}
 
 			slog.Debug("post comment", "file", comment.File, "line", int(comment.Line))
-			_, err := p.commenter.CallTool(gCtx, config.MCPServerBitbucket, config.ToolBitbucketAddComment, args)
+			toolName := p.cfg.MCP.Bitbucket.GetTool(config.ToolKeyAddComment)
+			_, err := p.commenter.CallTool(gCtx, config.MCPServerBitbucket, toolName, args)
 			if err != nil {
 				slog.Error("post comment failed", "file", comment.File, "error", err)
 				metrics.CommentPostFailures.WithLabelValues("api_error").Inc()
@@ -219,7 +221,8 @@ func (p *PRProcessor) postSummaryComment(ctx context.Context, pr *domain.PullReq
 		"commentText":   fullSummary,
 	}
 
-	_, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketAddComment, args)
+	toolName := p.cfg.MCP.Bitbucket.GetTool(config.ToolKeyAddComment)
+	_, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, toolName, args)
 	if err != nil {
 		slog.Error("post summary failed", "error", err)
 		metrics.CommentPostFailures.WithLabelValues("summary_error").Inc()

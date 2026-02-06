@@ -34,7 +34,7 @@ func (m *MockCommenter) CallTool(ctx context.Context, serverName, toolName strin
 		return m.CallToolFunc(ctx, serverName, toolName, args)
 	}
 	// Return a default suitable for parsing (empty bitbucket comments response)
-	if toolName == config.ToolBitbucketGetComments {
+	if toolName == "bitbucket_get_pull_request_comments" {
 		return `{"values": []}`, nil
 	}
 	return nil, nil // Default
@@ -59,10 +59,10 @@ func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
 		CallToolFunc: func(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
 			callCount.Add(1)
 			// Helper to simulate comments response
-			if toolName == config.ToolBitbucketGetComments {
+			if toolName == "bitbucket_get_pull_request_comments" {
 				return `{"values":[]}`, nil
 			}
-			if toolName == config.ToolBitbucketGetDiff {
+			if toolName == "bitbucket_get_pull_request_diff" {
 				return `diff --git a/main.go b/main.go
 index 123..456 100644
 --- a/main.go
@@ -79,7 +79,7 @@ index 123..456 100644
 +line 9
 +line 10`, nil
 			}
-			if toolName == config.ToolBitbucketAddComment {
+			if toolName == "bitbucket_add_pull_request_comment" {
 				// Verify lineNumber is string if present
 				if val, ok := args["lineNumber"]; ok {
 					if _, okStr := val.(string); !okStr {
@@ -98,6 +98,15 @@ index 123..456 100644
 	cfg := &config.Config{
 		Prompts: config.PromptsConfig{
 			Dir: "/home/stephen/workspace/agent-sets/prompts",
+		},
+		MCP: config.MCPConfig{
+			Bitbucket: config.MCPServerConfig{
+				Tools: map[string]string{
+					config.ToolKeyGetComments: "bitbucket_get_pull_request_comments",
+					config.ToolKeyGetDiff:     "bitbucket_get_pull_request_diff",
+					config.ToolKeyAddComment:  "bitbucket_add_pull_request_comment",
+				},
+			},
 		},
 	}
 	p, err := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
@@ -169,13 +178,13 @@ func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
 	var postedSummary string
 	mockCommenter := &MockCommenter{
 		CallToolFunc: func(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
-			if toolName == config.ToolBitbucketGetComments {
+			if toolName == "bitbucket_get_pull_request_comments" {
 				return `{"values":[]}`, nil
 			}
-			if toolName == config.ToolBitbucketGetDiff {
+			if toolName == "bitbucket_get_pull_request_diff" {
 				return `diff ...`, nil
 			}
-			if toolName == config.ToolBitbucketAddComment {
+			if toolName == "bitbucket_add_pull_request_comment" {
 				// Check if this is the summary comment (no lineNumber/filePath usually, or specific text)
 				if text, ok := args["commentText"].(string); ok {
 					if strings.Contains(text, "AI Review Summary") {
@@ -196,6 +205,15 @@ func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
 		},
 		Prompts: config.PromptsConfig{
 			Dir: "/home/stephen/workspace/agent-sets/prompts",
+		},
+		MCP: config.MCPConfig{
+			Bitbucket: config.MCPServerConfig{
+				Tools: map[string]string{
+					config.ToolKeyGetComments: "bitbucket_get_pull_request_comments",
+					config.ToolKeyGetDiff:     "bitbucket_get_pull_request_diff",
+					config.ToolKeyAddComment:  "bitbucket_add_pull_request_comment",
+				},
+			},
 		},
 	}
 	tracker := syncutil.NewTracker()
@@ -236,10 +254,10 @@ func TestPRProcessor_IndividualComment_Format(t *testing.T) {
 	var postedComment string
 	mockCommenter := &MockCommenter{
 		CallToolFunc: func(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
-			if toolName == config.ToolBitbucketGetComments {
+			if toolName == "bitbucket_get_pull_request_comments" {
 				return `{"values":[]}`, nil
 			}
-			if toolName == config.ToolBitbucketGetDiff {
+			if toolName == "bitbucket_get_pull_request_diff" {
 				return `diff --git a/main.go b/main.go
 index 123..456 100644
 --- a/main.go
@@ -256,7 +274,7 @@ index 123..456 100644
 +line 9
 +line 10`, nil
 			}
-			if toolName == config.ToolBitbucketAddComment {
+			if toolName == "bitbucket_add_pull_request_comment" {
 				// Capture the comment text
 				if text, ok := args["commentText"].(string); ok {
 					postedComment = text
@@ -276,6 +294,15 @@ index 123..456 100644
 		Prompts: config.PromptsConfig{
 			Dir: "/home/stephen/workspace/agent-sets/prompts",
 		},
+		MCP: config.MCPConfig{
+			Bitbucket: config.MCPServerConfig{
+				Tools: map[string]string{
+					config.ToolKeyGetComments: "bitbucket_get_pull_request_comments",
+					config.ToolKeyGetDiff:     "bitbucket_get_pull_request_diff",
+					config.ToolKeyAddComment:  "bitbucket_add_pull_request_comment",
+				},
+			},
+		},
 	}
 	tracker := syncutil.NewTracker()
 	p, err := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
@@ -292,7 +319,7 @@ index 123..456 100644
 		t.Errorf("Comment text missing double newline after marker.\nGot:\n%q\nExpected to contain:\n%q", postedComment, expectedMarkerSuffix)
 	}
 
-	expectedFooter := "*Automatically generated by test-model*"
+	expectedFooter := "*test-model*"
 	if !strings.Contains(postedComment, expectedFooter) {
 		t.Errorf("Comment text missing model footer.\nGot:\n%q", postedComment)
 	}

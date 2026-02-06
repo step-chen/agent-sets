@@ -20,6 +20,13 @@ func init() {
 			}
 		}
 
-		return NewResponseFilter(maxLen), nil
+		var tools map[string]string
+		if t, ok := config["tools"]; ok {
+			if tm, ok := t.(map[string]string); ok {
+				tools = tm
+			}
+		}
+
+		return NewResponseFilter(maxLen, tools), nil
 	})
 }

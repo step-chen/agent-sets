@@ -38,13 +38,20 @@ const (
 	MCPServerConfluence = "confluence"
 )
 
-// MCP Tool Names
+// Tool Semantic Keys
 const (
-	// Bitbucket Tools
-	ToolBitbucketGetDiff        = "bitbucket_get_pull_request_diff"
-	ToolBitbucketGetComments    = "bitbucket_get_pull_request_comments"
-	ToolBitbucketAddComment     = "bitbucket_add_pull_request_comment"
-	ToolBitbucketGetChanges     = "bitbucket_get_pull_request_changes"
-	ToolBitbucketGetFileContent = "bitbucket_get_file_content"
-	ToolBitbucketGetPullRequest = "bitbucket_get_pull_request"
+	ToolKeyGetDiff        = "get_diff"
+	ToolKeyGetComments    = "get_comments"
+	ToolKeyAddComment     = "add_comment"
+	ToolKeyGetFileContent = "get_file_content"
+	ToolKeyGetChanges     = "get_changes"
+	ToolKeyGetPullRequest = "get_pull_request"
 )
+
+// RequiredToolKeys lists the tool keys that must be configured
+var RequiredToolKeys = []string{
+	ToolKeyGetDiff,
+	ToolKeyGetComments,
+	ToolKeyAddComment,
+	ToolKeyGetFileContent,
+}

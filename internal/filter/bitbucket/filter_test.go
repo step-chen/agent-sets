@@ -2,6 +2,7 @@ package bitbucket
 
 import (
 	"encoding/json"
+	"pr-review-automation/internal/config"
 	"testing"
 )
 
@@ -106,7 +107,10 @@ func TestPayloadFilter(t *testing.T) {
 }
 
 func TestResponseFilter_Comments(t *testing.T) {
-	filter := NewResponseFilter(2000)
+	tools := map[string]string{
+		config.ToolKeyGetComments: "bitbucket_get_pull_request_comments",
+	}
+	filter := NewResponseFilter(2000, tools)
 	input := `
 {
   "values": [

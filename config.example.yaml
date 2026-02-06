@@ -58,6 +58,14 @@ mcp:
       - bitbucket_get_diff_between_commits
       - bitbucket_get_commit
     
+    tools:
+      get_diff: "bitbucket_get_pull_request_diff"
+      get_comments: "bitbucket_get_pull_request_comments"
+      add_comment: "bitbucket_add_pull_request_comment"
+      get_changes: "bitbucket_get_pull_request_changes"
+      get_file_content: "bitbucket_get_file_content"
+      get_pull_request: "bitbucket_get_pull_request"
+    
     response_filters:           # Response filter configuration
       - name: "truncate"        # Filter name: truncate
         options:
@@ -84,7 +92,7 @@ pipeline:
   enabled: true                 # Enable pipeline mode (Stage 1-3)
   backend: direct               # Backend mode: direct (LLM direct) or agent (Agentic)
   max_concurrent_comments: 5    # Max concurrent comments to submit
-  response_max_string_len: 81920 # Max string length for response
+  response_max_string_len: 65536 # Max string length for response
 
   stage1_diff:                    # Stage 1: Diff parsing (optional)
     prompt_template: pipeline/stage1.md
@@ -97,8 +105,8 @@ pipeline:
 
   stage3_review:                # Stage 3: Code review config
     prompt_template: pipeline/stage3.md  # Add this line
-    temperature: 0.1            # LLM temperature
-    max_context_tokens: 81920   # Max context token limit
+    temperature: 0.4            # LLM temperature
+    max_context_tokens: 65536   # Max context token limit
     use_json_schema: true       # Add this line - Enable OpenAI Structured Outputs
     proactive_compression: true # Proactively compress context if token limit is reached
     degradation:                # Degradation strategy (when context limit exceeded)
@@ -115,8 +123,8 @@ pipeline:
 
   anti_hallucination:
     min_confidence: 0.7         # Filter comments with confidence score < 0.7
-    show_confidence: false      # Append confidence score to comment body (default: false)
-    trust_threshold: 0.9        # Skip quote validation if confidence >= this (default: 0.9)
+    show_confidence: true      # Append confidence score to comment body (default: false)
+    trust_threshold: 0.8        # Skip quote validation if confidence >= this (default: 0.9)
 
 storage:
   driver: sqlite                # Storage driver (sqlite supported)

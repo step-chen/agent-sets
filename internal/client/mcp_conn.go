@@ -32,6 +32,7 @@ type endpointInfo struct {
 	token        string
 	authHeader   string   // Header name for token
 	allowedTools []string // Whitelist of tool names to expose
+	tools        map[string]string
 }
 
 // IsHealthy checks if all configured connections are healthy

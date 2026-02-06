@@ -237,7 +237,8 @@ func (p *PRProcessor) processWithReviewer(ctx context.Context, req *domain.Revie
 // fetchDiff retrieves the PR diff from Bitbucket for comment validation
 func (p *PRProcessor) fetchDiff(ctx context.Context, pr *domain.PullRequest) string {
 	prID, _ := strconv.Atoi(pr.ID)
-	result, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, config.ToolBitbucketGetDiff, map[string]interface{}{
+	toolName := p.cfg.MCP.Bitbucket.GetTool(config.ToolKeyGetDiff)
+	result, err := p.commenter.CallTool(ctx, config.MCPServerBitbucket, toolName, map[string]interface{}{
 		"projectKey":    pr.ProjectKey,
 		"repoSlug":      pr.RepoSlug,
 		"pullRequestId": prID,

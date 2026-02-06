@@ -307,24 +307,34 @@ func (m *CommentMerger) FormatSummaryAddons(comments []domain.ReviewComment) str
 		return comments[i].Line < comments[j].Line
 	})
 
+	var headers []string
+	if m.showConfidence {
+		headers = []string{"Location", "Conf", "Suggestion"}
+	} else {
+		headers = []string{"Location", "Suggestion"}
+	}
+
 	rows := make([][]string, 0, len(comments))
 	for _, c := range comments {
 		msg := strings.ReplaceAll(c.Comment, "|", "\\|")
 		msg = strings.ReplaceAll(msg, "\n", "<br>")
-		if m.showConfidence {
-			msg = fmt.Sprintf("*(%.0f%%)* %s", c.Confidence*100, msg)
-		}
 
 		locationLink := m.getLocationLink(c.File, int(c.Line))
 
-		rows = append(rows, []string{locationLink, msg})
+		if m.showConfidence {
+			confStr := fmt.Sprintf("%.0f%%", c.Confidence*100)
+			rows = append(rows, []string{locationLink, confStr, msg})
+		} else {
+			rows = append(rows, []string{locationLink, msg})
+		}
 	}
 
 	data := AddonsTemplateData{
 		TableData: TableData{
-			Headers: []string{"Location", "Suggestion"},
+			Headers: headers,
 			Rows:    rows,
 		},
+		ShowConfidence: m.showConfidence,
 	}
 
 	var buf bytes.Buffer
