@@ -33,11 +33,13 @@ const (
 
 // ReviewComment represents a single review comment
 type ReviewComment struct {
-	File     string       `json:"path" jsonschema:"minLength=1,required"`
-	Line     FlexibleLine `json:"line" jsonschema:"required"`
-	Comment  string       `json:"message" jsonschema:"minLength=1,required"`
-	Severity string       `json:"severity,omitempty" jsonschema:"enum=CRITICAL,enum=WARNING,enum=INFO,enum=NIT,required,description=CRITICAL: bugs/crashes/security; WARNING: performance/logic gaps; INFO: style/best-practices"`
-	Marker   string       `json:"marker,omitempty"` // Internal use for deduplication
+	File       string       `json:"path" jsonschema:"minLength=1,required"`
+	Line       FlexibleLine `json:"line" jsonschema:"required"`
+	Comment    string       `json:"message" jsonschema:"minLength=1,required"`
+	Severity   string       `json:"severity,omitempty" jsonschema:"enum=CRITICAL,enum=WARNING,enum=INFO,enum=NIT,required,description=CRITICAL: bugs/crashes/security; WARNING: performance/logic gaps; INFO: style/best-practices"`
+	Confidence float64      `json:"confidence" jsonschema:"minimum=0,maximum=1,required,description=Confidence level (0-1). 0.9+: obvious bugs; 0.7-0.9: likely issues; <0.7: uncertain."`
+	QuotedCode string       `json:"quoted_code,omitempty" jsonschema:"description=The exact 1-3 lines of code being commented on. Used for verification."`
+	Marker     string       `json:"marker,omitempty"` // Internal use for deduplication
 }
 
 // FlexibleLine handles both int and []int JSON input, resolving to a single int anchor.

@@ -45,17 +45,25 @@ type PRProcessor struct {
 	commenter Commenter
 	storage   storage.Repository
 	tracker   *syncutil.Tracker
+	templates *CommentTemplates // Templates for comment formatting
 }
 
 // NewPRProcessor creates a new PR processor with dependencies injected
-func NewPRProcessor(cfg *config.Config, reviewer Reviewer, commenter Commenter, storage storage.Repository, tracker *syncutil.Tracker) *PRProcessor {
+func NewPRProcessor(cfg *config.Config, reviewer Reviewer, commenter Commenter, storage storage.Repository, tracker *syncutil.Tracker) (*PRProcessor, error) {
+	loader := NewTemplateLoader(cfg.Prompts.Dir)
+	templates, err := loader.Load()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load comment templates: %w", err)
+	}
+
 	return &PRProcessor{
 		cfg:       cfg,
 		reviewer:  reviewer,
 		commenter: commenter,
 		storage:   storage,
 		tracker:   tracker,
-	}
+		templates: templates,
+	}, nil
 }
 
 // CreateBackupHandler creates a backup LLM handler function
@@ -116,6 +124,14 @@ func (p *PRProcessor) ProcessPullRequest(ctx context.Context, req *domain.Review
 	// Note: Diff availability checked in fetchDiff, if empty validator might be limited but won't crash
 	commentValidator := validator.NewCommentValidator(diff)
 	validComments, invalidComments := p.validateComments(review.Comments, commentValidator)
+
+	// 5.1 Filter Low Confidence
+	validComments = p.filterLowConfidence(validComments)
+
+	// 5.2 Validate Quoted Code (Anti-Hallucination V2)
+	// We need the raw diff content for this validation.
+	// We have 'diff' variable from earlier fetch.
+	validComments = p.validateQuotedCode(validComments, diff)
 
 	// 6. Semantic Deduplication
 	newComments := p.filterDuplicates(validComments, req.HistoricalComments)
@@ -184,6 +200,12 @@ func (p *PRProcessor) processWithReviewer(ctx context.Context, req *domain.Revie
 	commentValidator := validator.NewCommentValidator(diff)
 
 	validComments, _ := p.validateComments(review.Comments, commentValidator)
+
+	// 2.1 Filter Low Confidence
+	validComments = p.filterLowConfidence(validComments)
+
+	// 2.2 Validate Quoted Code
+	validComments = p.validateQuotedCode(validComments, diff)
 
 	// 3. Deduplication
 	newComments := p.filterDuplicates(validComments, req.HistoricalComments)

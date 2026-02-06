@@ -1,0 +1,12 @@
+{{ template "marker.tmpl" .MarkerData }}
+
+{{- if .Title }}
+## {{ .Icon }} {{ .Title }}
+
+{{- end }}
+{{- if .TableData }}
+{{ template "table.tmpl" .TableData }}
+{{- else }}
+{{ .Content }}
+{{- end }}
+{{ template "footer.tmpl" .FooterData }}

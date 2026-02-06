@@ -297,6 +297,7 @@ Handles Webhook events from Bitbucket Data Center:
 | Review History API     | Not Impl. | HTTP functionality to query reviews |
 | Admin Dashboard        | Not Impl. | Web UI for metrics and history      |
 | More Review Algorithms | Not Impl. | Extensible review rules             |
+| Semantic Validation    | Not Impl. | Validate code quotes exist in diff  |
 
 ---
 

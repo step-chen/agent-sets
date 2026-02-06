@@ -1,0 +1,11 @@
+{{ template "marker.tmpl" .MarkerData }}
+
+**AI Review Summary**
+Score: {{ .Score }}
+
+{{ .Content }}
+{{- if .Addons }}
+
+{{ .Addons }}
+{{- end }}
+{{ template "footer.tmpl" .FooterData }}

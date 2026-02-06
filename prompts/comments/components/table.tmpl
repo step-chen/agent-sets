@@ -1,0 +1,8 @@
+{{- /* Generic table renderer */ -}}
+{{- if .Rows }}
+| {{ range $i, $h := .Headers }}{{ if $i }} | {{ end }}{{ $h }}{{ end }} |
+|{{ range .Headers }}------|{{ end }}
+{{- range .Rows }}
+| {{ range $i, $cell := . }}{{ if $i }} | {{ end }}{{ $cell }}{{ end }} |
+{{- end }}
+{{- end }}

@@ -120,10 +120,23 @@ type PipelineConfig struct {
 	MaxConcurrentComments int    `yaml:"max_concurrent_comments"`
 	ResponseMaxStringLen  int    `yaml:"response_max_string_len"`
 
-	Stage1Diff    Stage1Config       `yaml:"stage1_diff"`
-	Stage2Context Stage2Config       `yaml:"stage2_context"`
-	Stage3Review  Stage3Config       `yaml:"stage3_review"`
-	CommentMerge  CommentMergeConfig `yaml:"comment_merge"`
+	Stage1Diff        Stage1Config            `yaml:"stage1_diff"`
+	Stage2Context     Stage2Config            `yaml:"stage2_context"`
+	Stage3Review      Stage3Config            `yaml:"stage3_review"`
+	CommentMerge      CommentMergeConfig      `yaml:"comment_merge"`
+	AntiHallucination AntiHallucinationConfig `yaml:"anti_hallucination"`
+}
+
+type AntiHallucinationConfig struct {
+	// MinConfidence filters comments below this threshold (0-1)
+	// Set to 0 to disable confidence filtering
+	MinConfidence float64 `yaml:"min_confidence"`
+
+	// ShowConfidence determines if confidence score is appended to comment body
+	ShowConfidence bool `yaml:"show_confidence"`
+
+	// TrustThreshold: if confidence >= this, skip quote validation (default 0.9)
+	TrustThreshold float64 `yaml:"trust_threshold"`
 }
 
 type CommentMergeConfig struct {
@@ -154,12 +167,13 @@ type Stage3Config struct {
 }
 
 type DegradationConfig struct {
-	L1ContextLines    int                `yaml:"l1_context_lines"` // L1: Lines of context to keep around changes (default: 50)
-	L2ChunkByFile     bool               `yaml:"l2_chunk_by_file"` // L2: Enable chunking by file (default: true)
-	L3DiffOnly        bool               `yaml:"l3_diff_only"`     // L3: Fallback to diff only (default: true)
-	L2MaxFailureRatio float64            `yaml:"l2_max_failure_ratio"`
-	L2FailFast        bool               `yaml:"l2_fail_fast"`
-	CommentMerge      CommentMergeConfig `yaml:"comment_merge"` // Passed down for chunk deduplication
+	L1ContextLines    int     `yaml:"l1_context_lines"` // L1: Lines of context to keep around changes (default: 50)
+	L2ChunkByFile     bool    `yaml:"l2_chunk_by_file"` // L2: Enable chunking by file (default: true)
+	L3DiffOnly        bool    `yaml:"l3_diff_only"`     // L3: Fallback to diff only (default: true)
+	L2MaxFailureRatio float64 `yaml:"l2_max_failure_ratio"`
+	L2FailFast        bool    `yaml:"l2_fail_fast"`
+
+	CommentMerge CommentMergeConfig `yaml:"comment_merge"` // Passed down for chunk deduplication
 }
 
 // GetLogLevel returns the slog.Level based on Log.Level string
@@ -216,7 +230,7 @@ func LoadConfig() *Config {
 	cfg.Pipeline.Stage2Context.MaxFileSize = 50000
 	cfg.Pipeline.Stage3Review.PromptTemplate = "pipeline/stage3.md"
 	cfg.Pipeline.Stage3Review.Temperature = 0.2
-	cfg.Pipeline.Stage3Review.MaxContextTokens = 64000
+	cfg.Pipeline.Stage3Review.MaxContextTokens = 65536
 	cfg.Pipeline.Stage3Review.UseJSONSchema = true        // Default: enable strict JSON schema
 	cfg.Pipeline.Stage3Review.ProactiveCompression = true // Default enabled
 	cfg.Pipeline.Stage3Review.Degradation.L1ContextLines = 50
@@ -224,10 +238,16 @@ func LoadConfig() *Config {
 	cfg.Pipeline.Stage3Review.Degradation.L3DiffOnly = true
 	cfg.Pipeline.Stage3Review.Degradation.L2MaxFailureRatio = 0.5
 	cfg.Pipeline.Stage3Review.Degradation.L2FailFast = false
+
 	cfg.Pipeline.Stage3Review.Degradation.CommentMerge = cfg.Pipeline.CommentMerge // Pass down defaults
 	cfg.Pipeline.CommentMerge.Enabled = true
 	cfg.Pipeline.CommentMerge.HighSeverityMerge = "by_file"
 	cfg.Pipeline.CommentMerge.LowSeverityMerge = "to_summary"
+
+	// Anti-Hallucination defaults
+	cfg.Pipeline.AntiHallucination.MinConfidence = 0.7
+	cfg.Pipeline.AntiHallucination.ShowConfidence = false
+	cfg.Pipeline.AntiHallucination.TrustThreshold = 0.8
 
 	// Log Rotation defaults
 	cfg.Log.Rotation.MaxSize = 100

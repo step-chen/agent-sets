@@ -46,7 +46,7 @@ func TestPRProcessor_ProcessPullRequest_Success(t *testing.T) {
 		ReviewPRFunc: func(ctx context.Context, req *domain.ReviewRequest) (*domain.ReviewResult, error) {
 			return &domain.ReviewResult{
 				Comments: []domain.ReviewComment{
-					{File: "main.go", Line: 10, Comment: "Fix this"},
+					{File: "main.go", Line: 10, Comment: "Fix this", Confidence: 1.0},
 				},
 				Score:   90,
 				Summary: "Good PR",
@@ -95,7 +95,15 @@ index 123..456 100644
 
 	// Create processor
 	tracker := syncutil.NewTracker()
-	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil, tracker)
+	cfg := &config.Config{
+		Prompts: config.PromptsConfig{
+			Dir: "/home/stephen/workspace/agent-sets/prompts",
+		},
+	}
+	p, err := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
+	if err != nil {
+		t.Fatalf("NewPRProcessor failed: %v", err)
+	}
 
 	// Test data
 	pr := &domain.PullRequest{
@@ -107,17 +115,17 @@ index 123..456 100644
 		Author:      "dev",
 	}
 
-	// Execute
-	err := p.ProcessPullRequest(context.Background(), &domain.ReviewRequest{PR: pr})
+	// Test execution
+	err = p.ProcessPullRequest(context.Background(), &domain.ReviewRequest{PR: pr})
 
 	// Verify
 	if err != nil {
 		t.Errorf("Expected success, got error: %v", err)
 	}
 
-	// Expect 3 calls: 1 fetch comments, 1 post comment, 1 post summary
-	if val := callCount.Load(); val != 3 {
-		t.Errorf("Expected 3 CallTool invocations, got %d", val)
+	// Expect 4 calls: 1 fetch diff, 1 fetch comments, 1 post comment, 1 post summary
+	if val := callCount.Load(); val != 4 {
+		t.Errorf("Expected 4 CallTool invocations, got %d", val)
 	}
 }
 
@@ -130,9 +138,17 @@ func TestPRProcessor_ProcessPullRequest_ReviewFail(t *testing.T) {
 	mockCommenter := &MockCommenter{}
 
 	tracker := syncutil.NewTracker()
-	p := NewPRProcessor(&config.Config{}, mockReviewer, mockCommenter, nil, tracker)
+	cfg := &config.Config{
+		Prompts: config.PromptsConfig{
+			Dir: "/home/stephen/workspace/agent-sets/prompts",
+		},
+	}
+	p, err := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
+	if err != nil {
+		t.Fatalf("NewPRProcessor failed: %v", err)
+	}
 
-	err := p.ProcessPullRequest(context.Background(), &domain.ReviewRequest{PR: &domain.PullRequest{ID: "123"}})
+	err = p.ProcessPullRequest(context.Background(), &domain.ReviewRequest{PR: &domain.PullRequest{ID: "123"}})
 	if err == nil {
 		t.Error("Expected error, got nil")
 	}
@@ -178,9 +194,15 @@ func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
 				Enabled: true,
 			},
 		},
+		Prompts: config.PromptsConfig{
+			Dir: "/home/stephen/workspace/agent-sets/prompts",
+		},
 	}
 	tracker := syncutil.NewTracker()
-	p := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
+	p, err := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
+	if err != nil {
+		t.Fatalf("NewPRProcessor failed: %v", err)
+	}
 	pr := &domain.PullRequest{ID: "123", ProjectKey: "PROJ", RepoSlug: "repo"}
 
 	p.ProcessPullRequest(context.Background(), &domain.ReviewRequest{PR: pr})
@@ -193,5 +215,85 @@ func TestPRProcessor_ProcessPullRequest_SummaryHeaderCleaning(t *testing.T) {
 	}
 	if !strings.Contains(postedSummary, "Bad Header") {
 		t.Errorf("Summary should contain plain text. Got: %s", postedSummary)
+	}
+}
+
+func TestPRProcessor_IndividualComment_Format(t *testing.T) {
+	// Setup mocks
+	mockReviewer := &MockReviewer{
+		ReviewPRFunc: func(ctx context.Context, req *domain.ReviewRequest) (*domain.ReviewResult, error) {
+			return &domain.ReviewResult{
+				Comments: []domain.ReviewComment{
+					{File: "main.go", Line: 10, Comment: "Fix this", Confidence: 1.0},
+				},
+				Score:   90,
+				Summary: "Good PR",
+				Model:   "test-model",
+			}, nil
+		},
+	}
+
+	var postedComment string
+	mockCommenter := &MockCommenter{
+		CallToolFunc: func(ctx context.Context, serverName, toolName string, args map[string]interface{}) (any, error) {
+			if toolName == config.ToolBitbucketGetComments {
+				return `{"values":[]}`, nil
+			}
+			if toolName == config.ToolBitbucketGetDiff {
+				return `diff --git a/main.go b/main.go
+index 123..456 100644
+--- a/main.go
++++ b/main.go
+@@ -1,1 +1,10 @@
++line 1
++line 2
++line 3
++line 4
++line 5
++line 6
++line 7
++line 8
++line 9
++line 10`, nil
+			}
+			if toolName == config.ToolBitbucketAddComment {
+				// Capture the comment text
+				if text, ok := args["commentText"].(string); ok {
+					postedComment = text
+				}
+			}
+			return nil, nil
+		},
+	}
+
+	// Disable comment merge to enforce individual comments
+	cfg := &config.Config{
+		Pipeline: config.PipelineConfig{
+			CommentMerge: config.CommentMergeConfig{
+				Enabled: false,
+			},
+		},
+		Prompts: config.PromptsConfig{
+			Dir: "/home/stephen/workspace/agent-sets/prompts",
+		},
+	}
+	tracker := syncutil.NewTracker()
+	p, err := NewPRProcessor(cfg, mockReviewer, mockCommenter, nil, tracker)
+	if err != nil {
+		t.Fatalf("NewPRProcessor failed: %v", err)
+	}
+	pr := &domain.PullRequest{ID: "123", ProjectKey: "PROJ", RepoSlug: "repo", LatestCommit: "commit123"}
+
+	p.ProcessPullRequest(context.Background(), &domain.ReviewRequest{PR: pr})
+
+	// Expected format: <!-- ai-review::main.go:10:commit123-->\n\nFix this...
+	expectedMarkerSuffix := config.MarkerAIReviewSuffix + "\n\n"
+	if !strings.Contains(postedComment, expectedMarkerSuffix) {
+		t.Errorf("Comment text missing double newline after marker.\nGot:\n%q\nExpected to contain:\n%q", postedComment, expectedMarkerSuffix)
+	}
+
+	expectedFooter := "*Automatically generated by test-model*"
+	if !strings.Contains(postedComment, expectedFooter) {
+		t.Errorf("Comment text missing model footer.\nGot:\n%q", postedComment)
 	}
 }

@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 	"strconv"
@@ -12,13 +13,15 @@ import (
 
 // CommentMerger handles comment grouping and merging
 type CommentMerger struct {
-	config   *config.CommentMergeConfig
-	prWebURL string
+	config         *config.CommentMergeConfig
+	prWebURL       string
+	templates      *CommentTemplates
+	showConfidence bool
 }
 
 // NewCommentMerger creates a new CommentMerger
-func NewCommentMerger(cfg *config.CommentMergeConfig, prWebURL string) *CommentMerger {
-	return &CommentMerger{config: cfg, prWebURL: prWebURL}
+func NewCommentMerger(cfg *config.CommentMergeConfig, prWebURL string, templates *CommentTemplates, showConfidence bool) *CommentMerger {
+	return &CommentMerger{config: cfg, prWebURL: prWebURL, templates: templates, showConfidence: showConfidence}
 }
 
 // MergeResult contains merged comments ready for posting
@@ -32,7 +35,7 @@ type MergeResult struct {
 type MergedFileComment struct {
 	FilePath  string
 	Comments  []domain.ReviewComment
-	Marker    string // <!-- ai-review::file:path:commit -->
+	Commit    string // For marker generation
 	ModelName string
 }
 
@@ -46,6 +49,9 @@ func (m *CommentMerger) Merge(comments []domain.ReviewComment, commit string) *M
 	if !m.config.Enabled {
 		return res
 	}
+
+	// Step 1: Deduplicate by location (File:Line)
+	comments = m.deduplicateByLocation(comments)
 
 	fileGroups := make(map[string][]domain.ReviewComment)
 
@@ -91,12 +97,10 @@ func (m *CommentMerger) Merge(comments []domain.ReviewComment, commit string) *M
 			return cs[i].Line < cs[j].Line
 		})
 
-		marker := fmt.Sprintf("%s%s:%s:%s%s", config.MarkerAIReviewPrefix, config.MarkerTypeFile, file, commit, config.MarkerAIReviewSuffix)
-
 		res.FileComments = append(res.FileComments, MergedFileComment{
 			FilePath: file,
 			Comments: cs,
-			Marker:   marker,
+			Commit:   commit,
 		})
 	}
 
@@ -106,6 +110,75 @@ func (m *CommentMerger) Merge(comments []domain.ReviewComment, commit string) *M
 	})
 
 	return res
+}
+
+// deduplicateByLocation merges comments for the same location
+func (m *CommentMerger) deduplicateByLocation(comments []domain.ReviewComment) []domain.ReviewComment {
+	groups := make(map[string][]domain.ReviewComment)
+	var keys []string
+
+	for _, c := range comments {
+		// Use Line as anchor
+		key := fmt.Sprintf("%s:%d", c.File, c.Line)
+		if _, exists := groups[key]; !exists {
+			keys = append(keys, key)
+		}
+		groups[key] = append(groups[key], c)
+	}
+
+	var result []domain.ReviewComment
+	for _, key := range keys {
+		result = append(result, m.mergeGroup(groups[key]))
+	}
+	return result
+}
+
+// mergeGroup merges a list of comments for the same location into a single comment
+func (m *CommentMerger) mergeGroup(group []domain.ReviewComment) domain.ReviewComment {
+	if len(group) == 1 {
+		return group[0]
+	}
+
+	// Sort group by length (descending) to prefer richer comments as base
+	sort.Slice(group, func(i, j int) bool {
+		return len(group[i].Comment) > len(group[j].Comment)
+	})
+
+	base := group[0]
+	for i := 1; i < len(group); i++ {
+		if !m.isSimilar(base.Comment, group[i].Comment) {
+			base.Comment += fmt.Sprintf("\n\n[Also]: %s", group[i].Comment)
+		}
+		// Upgrade severity if higher
+		if severityRank(group[i].Severity) > severityRank(base.Severity) {
+			base.Severity = group[i].Severity
+		}
+		// Keep highest confidence
+		if group[i].Confidence > base.Confidence {
+			base.Confidence = group[i].Confidence
+		}
+	}
+	return base
+}
+
+// isSimilar checks if two strings are roughly the same
+func (m *CommentMerger) isSimilar(a, b string) bool {
+	aLower := strings.ToLower(strings.TrimSpace(a))
+	bLower := strings.ToLower(strings.TrimSpace(b))
+	return strings.Contains(aLower, bLower) || strings.Contains(bLower, aLower)
+}
+
+func severityRank(s string) int {
+	switch s {
+	case domain.CommentSeverityCritical:
+		return 3
+	case domain.CommentSeverityWarning:
+		return 2
+	case domain.CommentSeverityInfo:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (m *CommentMerger) isHighSeverity(severty string) bool {
@@ -131,32 +204,30 @@ func (m *CommentMerger) getLineLink(filePath string, line int) string {
 	return fmt.Sprintf("[%d](%s)", line, url)
 }
 
+func (m *CommentMerger) getLocationLink(filePath string, line int) string {
+	if m.prWebURL == "" {
+		return fmt.Sprintf("%s:%d", filePath, line)
+	}
+	// Format: [{FilePath}:{Line}]({PR_WEB_URL}/diff#{FilePath}?t={Line})
+	url := fmt.Sprintf("%s/diff#%s?t=%d", m.prWebURL, filePath, line)
+	return fmt.Sprintf("[%s:%d](%s)", filePath, line, url)
+}
+
 // FormatFileComment generates Markdown for a file comment
 func (m *CommentMerger) FormatFileComment(fc *MergedFileComment) string {
-	var sb strings.Builder
-	sb.WriteString(fc.Marker)
-	sb.WriteString("\n\n")
+	if m.templates == nil || m.templates.Inline == nil {
+		return ""
+	}
 
-	// Determine max severity for icon
+	// Prepare rows
+	rows := make([][]string, 0, len(fc.Comments))
 	maxSev := domain.CommentSeverityWarning
+
 	for _, c := range fc.Comments {
 		if strings.ToUpper(c.Severity) == domain.CommentSeverityCritical {
 			maxSev = domain.CommentSeverityCritical
-			break
 		}
-	}
 
-	icon := "⚠️"
-	if maxSev == domain.CommentSeverityCritical {
-		icon = "🚫"
-	}
-
-	fileLink := m.getFileLink(fc.FilePath)
-	sb.WriteString(fmt.Sprintf("## %s %s Code Review\n\n", icon, fileLink))
-	sb.WriteString("| Line | Severity | Message |\n")
-	sb.WriteString("|------|----------|----------|\n")
-
-	for _, c := range fc.Comments {
 		sevBadge := c.Severity
 		if strings.ToUpper(sevBadge) == "WARNING" {
 			sevBadge = "⚠️ WARNING"
@@ -167,17 +238,56 @@ func (m *CommentMerger) FormatFileComment(fc *MergedFileComment) string {
 		// Escape pipes and newlines
 		msg := strings.ReplaceAll(c.Comment, "|", "\\|")
 		msg = strings.ReplaceAll(msg, "\n", "<br>")
+		msg = strings.ReplaceAll(msg, "\n", "<br>")
+		// Confidence is now handled in the table row itself (for file comments, we keep it here for now or move to verify?)
+		// Actually, for file comments (inline table), the confidence should still remain in the message or separate column?
+		// The requirements didn't specify changing the FileComment table, only the Summary Table and Individual Footer.
+		// So I will keep this logic AS IS for FormatFileComment to avoid regression, unless specified.
+		// Wait, user said "Individual Comment Footer". FormatFileComment generates a TABLE for multiple comments on one file.
+		// So checking if I should touch this. User request: "Individual Comment Footer".
+		// FormatFileComment uses `inline.tmpl` which uses `table.tmpl`.
+		// It renders a table.
+		// Let's keep it as is for now, but I must compile.
+		if m.showConfidence {
+			msg += fmt.Sprintf(" *(Confidence: %.0f%%)*", c.Confidence*100)
+		}
 
-		sb.WriteString(fmt.Sprintf("| %d | %s | %s |\n", int(c.Line), sevBadge, msg))
+		rows = append(rows, []string{
+			strconv.Itoa(int(c.Line)),
+			sevBadge,
+			msg,
+		})
 	}
 
-	footer := "*This comment was automatically generated by AI Code Review*"
-	if fc.ModelName != "" {
-		footer = fmt.Sprintf("*Automatically generated by %s*", fc.ModelName)
+	icon := "⚠️"
+	if maxSev == domain.CommentSeverityCritical {
+		icon = "🚫"
 	}
 
-	sb.WriteString(fmt.Sprintf("\n---\n%s", footer))
-	return sb.String()
+	data := InlineTemplateData{
+		MarkerData: MarkerData{
+			Type:   config.MarkerTypeFile,
+			File:   fc.FilePath,
+			Commit: fc.Commit,
+		},
+		FooterData: FooterData{
+			Model:          fc.ModelName,
+			Confidence:     0, // Will be handled per row in the table, or max confidence for the file?
+			ShowConfidence: false,
+		},
+		Icon:  icon,
+		Title: m.getFileLink(fc.FilePath) + " Code Review",
+		TableData: &TableData{
+			Headers: []string{"Line", "Severity", "Message"},
+			Rows:    rows,
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := m.templates.Inline.Execute(&buf, data); err != nil {
+		return ""
+	}
+	return buf.String()
 }
 
 // FormatSummaryAddons generates Markdown table for INFO/NIT comments
@@ -185,11 +295,9 @@ func (m *CommentMerger) FormatSummaryAddons(comments []domain.ReviewComment) str
 	if len(comments) == 0 {
 		return ""
 	}
-
-	var sb strings.Builder
-	sb.WriteString("\n### 📋 Suggestions (INFO/NIT)\n\n")
-	sb.WriteString("| File | Line | Suggestion |\n")
-	sb.WriteString("|------|------|------|\n")
+	if m.templates == nil || m.templates.Addons == nil {
+		return ""
+	}
 
 	// Sort by file then line
 	sort.Slice(comments, func(i, j int) bool {
@@ -199,15 +307,29 @@ func (m *CommentMerger) FormatSummaryAddons(comments []domain.ReviewComment) str
 		return comments[i].Line < comments[j].Line
 	})
 
+	rows := make([][]string, 0, len(comments))
 	for _, c := range comments {
 		msg := strings.ReplaceAll(c.Comment, "|", "\\|")
 		msg = strings.ReplaceAll(msg, "\n", "<br>")
+		if m.showConfidence {
+			msg = fmt.Sprintf("*(%.0f%%)* %s", c.Confidence*100, msg)
+		}
 
-		fileLink := m.getFileLink(c.File)
-		lineLink := m.getLineLink(c.File, int(c.Line))
+		locationLink := m.getLocationLink(c.File, int(c.Line))
 
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s |\n", fileLink, lineLink, msg))
+		rows = append(rows, []string{locationLink, msg})
 	}
 
-	return sb.String()
+	data := AddonsTemplateData{
+		TableData: TableData{
+			Headers: []string{"Location", "Suggestion"},
+			Rows:    rows,
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := m.templates.Addons.Execute(&buf, data); err != nil {
+		return ""
+	}
+	return buf.String()
 }

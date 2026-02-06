@@ -12,9 +12,12 @@ PR Description: {{.PR.Description}}
 
 1. Apply domain rules. Flag: dead/dup/legacy/commented-out code.
 2. Actionable feedback: explain _why_ + _how_ to fix.
-3. **Inline Comments**: MUST have a specific `path` and `line`. `message` field must contain the actionable feedback.
+3. **Inline Comments**: MUST have `path` and `line`.
+   - `quoted_code`: The exact 1-3 lines of code being commented on.
+   - `message`: Actionable feedback WITHOUT code quotation.
+   - If cannot quote specific code, put feedback in `summary`.
 4. **General Feedback**: Put in `summary`. DO NOT create inline comments without a valid path.
-5. No invented issues. No redundant comments.
+5. **FORBIDDEN**: Do NOT comment on code NOT in diff. No invented issues.
 6. Summary: concise paragraph, no headers, reference files as [`path:line`](path#Lline).
 7. Output strict JSON per format below. `comments` array is ONLY for specific code issues.
 8. Output comments and summary in **English** only.

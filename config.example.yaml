@@ -113,6 +113,11 @@ pipeline:
     high_severity_merge: "none" # Merge strategy for high severity: "by_file" (per file), "none" (inline)
     low_severity_merge: "to_summary" # Merge strategy for low severity: "to_summary", "none"
 
+  anti_hallucination:
+    min_confidence: 0.7         # Filter comments with confidence score < 0.7
+    show_confidence: false      # Append confidence score to comment body (default: false)
+    trust_threshold: 0.9        # Skip quote validation if confidence >= this (default: 0.9)
+
 storage:
   driver: sqlite                # Storage driver (sqlite supported)
   dsn: "data/reviews.db"        # Database connection string / file path

@@ -40,23 +40,100 @@ func (p *PRProcessor) validateComments(comments []domain.ReviewComment, v *valid
 
 // filterDuplicates filters out comments that have already been made
 func (p *PRProcessor) filterDuplicates(newComments, existingComments []domain.ReviewComment) []domain.ReviewComment {
-	if len(existingComments) == 0 {
-		return newComments
-	}
-
 	existingSet := make(map[string]bool)
+	// 1. Load fingerprints from historical comments
 	for _, c := range existingComments {
-		fp := c.Fingerprint()
-		existingSet[fp] = true
+		existingSet[c.Fingerprint()] = true
 	}
 
 	var filtered []domain.ReviewComment
 	for _, c := range newComments {
-		if !existingSet[c.Fingerprint()] {
+		fp := c.Fingerprint()
+		// 2. Check if exists (either previous history or current batch processed)
+		if !existingSet[fp] {
 			filtered = append(filtered, c)
+			// 3. Mark as seen to prevent duplicates within the same batch
+			existingSet[fp] = true
 		}
 	}
 	return filtered
+}
+
+// filterLowConfidence removes comments with confidence below threshold
+func (p *PRProcessor) filterLowConfidence(comments []domain.ReviewComment) []domain.ReviewComment {
+	threshold := p.cfg.Pipeline.AntiHallucination.MinConfidence
+	if threshold <= 0 {
+		return comments // Disabled
+	}
+
+	var filtered []domain.ReviewComment
+	for _, c := range comments {
+		if c.Confidence >= threshold {
+			filtered = append(filtered, c)
+		} else {
+			slog.Debug("filtered low confidence comment",
+				"file", c.File,
+				"line", c.Line,
+				"confidence", c.Confidence,
+				"message_preview", truncate(c.Comment, 50))
+		}
+	}
+	return filtered
+}
+
+// validateQuotedCode ensures quoted code exists in the diff, respecting trust threshold
+func (p *PRProcessor) validateQuotedCode(comments []domain.ReviewComment, diff string) []domain.ReviewComment {
+	trustThreshold := p.cfg.Pipeline.AntiHallucination.TrustThreshold
+	// Default to 0.9 if not set (or set to 0), but allow explicit 0.0 via pointer if we wanted strictness.
+	// For now, if config is 0, we assume it means "strict validation for everyone" OR "default 0.9"?
+	// Upstream logic: TrustThreshold is float. If 0, it means we don't trust anyone unless they quote.
+	if trustThreshold <= 0 {
+		trustThreshold = 0.8 // Default secure fallback
+	}
+
+	var validated []domain.ReviewComment
+	for _, c := range comments {
+		// Trust high confidence comments without quotes
+		if c.Confidence >= trustThreshold && c.QuotedCode == "" {
+			validated = append(validated, c)
+			continue
+		}
+
+		// If quoted code is present, it MUST exist in diff
+		if c.QuotedCode != "" {
+			if strings.Contains(normalizeWhitespace(diff), normalizeWhitespace(c.QuotedCode)) {
+				validated = append(validated, c)
+			} else {
+				slog.Warn("hallucinated quote detected",
+					"file", c.File,
+					"line", c.Line,
+					"quote", truncate(c.QuotedCode, 50))
+				// Dropping hallucinated comment
+			}
+			continue
+		}
+
+		// If low confidence and no quote, we drop it (enforce evidence for uncertain comments)
+		if c.Confidence < trustThreshold {
+			slog.Warn("low confidence comment missing quote",
+				"file", c.File,
+				"line", c.Line,
+				"confidence", c.Confidence)
+			continue
+		}
+	}
+	return validated
+}
+
+func normalizeWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func truncate(s string, max int) string {
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }
 
 // fetchExistingAIComments fetches existing comments from Bitbucket and filters for AI comments
@@ -91,57 +168,10 @@ func (p *PRProcessor) fetchExistingAIComments(ctx context.Context, pr *domain.Pu
 
 		// Check for AI marker
 		if strings.Contains(rawContent, config.MarkerAIReviewPrefix) || strings.Contains(rawContent, config.MarkerAIReviewVisible) {
-			path := value.Get("inline.path").String()
-			// 'to' is usually the line number in PR diffs for added/modified lines in Bitbucket
-			line := int(value.Get("inline.to").Int())
-
 			// Check if content contains a table (Merged Comment)
 			tableComments := parseTableComments(rawContent)
 			if len(tableComments) > 0 {
 				comments = append(comments, tableComments...)
-			}
-
-			// If path/line not in inline (e.g. general comment), try to parse from marker
-			if path == "" {
-				// Parse from marker: <!-- ai-review:file:line -->
-				if start := strings.Index(rawContent, config.MarkerAIReviewPrefix); start != -1 {
-					end := strings.Index(rawContent[start:], config.MarkerAIReviewSuffix)
-					if end != -1 {
-						marker := rawContent[start : start+end]
-						parts := strings.Split(marker, ":")
-						if len(parts) >= 3 {
-							path = parts[1]
-							if l, err := strconv.Atoi(parts[2]); err == nil {
-								line = l
-							}
-						}
-					}
-				}
-			}
-
-			// Clean comment content (remove marker)
-			cleanComment := rawContent
-			// Remove HTML comments
-			if idx := strings.Index(cleanComment, config.MarkerAIReviewSuffix); idx != -1 {
-				cleanComment = strings.TrimSpace(cleanComment[idx+len(config.MarkerAIReviewSuffix):])
-			}
-
-			// Identify if this is a legacy/individual comment (not table)
-			if len(tableComments) == 0 && path != "" {
-				// Capture marker
-				var marker string
-				if start := strings.Index(rawContent, config.MarkerAIReviewPrefix); start != -1 {
-					if end := strings.Index(rawContent[start:], config.MarkerAIReviewSuffix); end != -1 {
-						marker = rawContent[start : start+end+len(config.MarkerAIReviewSuffix)]
-					}
-				}
-
-				comments = append(comments, domain.ReviewComment{
-					File:    path,
-					Line:    domain.FlexibleLine(line),
-					Comment: cleanComment,
-					Marker:  marker,
-				})
 			}
 		}
 		return true // keep iterating

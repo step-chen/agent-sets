@@ -31,23 +31,6 @@ const (
 	DedupeKeySemanticFormat = "%s:%s"
 )
 
-// Report formatting
-const (
-	ReportChunkedHeader  = "**Reviewed in %d chunks**\n\n"
-	ReportPartialWarning = "⚠️ **Partial Review** (some chunks failed):\n"
-	ReportSummaryHeader  = "**Summary by section:**\n"
-	ReportNoSummary      = "No detailed summary available."
-)
-
-// Token limit error keywords (internal use only, not configurable)
-var TokenLimitErrorKeywords = []string{
-	"context_length_exceeded",
-	"maximum context length",
-	"context window",
-	"token limit",
-	"too many tokens",
-}
-
 // MCP Server Names
 const (
 	MCPServerBitbucket  = "bitbucket"
@@ -64,10 +47,4 @@ const (
 	ToolBitbucketGetChanges     = "bitbucket_get_pull_request_changes"
 	ToolBitbucketGetFileContent = "bitbucket_get_file_content"
 	ToolBitbucketGetPullRequest = "bitbucket_get_pull_request"
-)
-
-// Tool Sets
-var (
-	// ChunkedReviewAllowedTools is the minimal toolset for chunked PR review
-	ChunkedReviewAllowedTools = []string{ToolBitbucketGetFileContent}
 )

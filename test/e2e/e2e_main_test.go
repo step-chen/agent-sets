@@ -196,11 +196,11 @@ func TestE2E_Main(t *testing.T) {
 					// Formatting logic
 					var comment string
 					if filePath, ok := args["filePath"]; ok {
-						comment = fmt.Sprintf("Path: %v | Line: %v | LineType: %v | Comment: %v",
+						comment = fmt.Sprintf("Path: %v | Line: %v | LineType: %v\n%v",
 							filePath, args["lineNumber"], args["lineType"], args["commentText"])
 					} else {
 						// Summary or General Comment
-						comment = fmt.Sprintf("Type: Summary/General | Comment: %v", args["commentText"])
+						comment = fmt.Sprintf("Type: Summary/General\n%v", args["commentText"])
 					}
 
 					mu.Lock()
@@ -237,7 +237,10 @@ func TestE2E_Main(t *testing.T) {
 	// Create Reviewer & Processor
 	taskTracker := syncutil.NewTracker()
 	prReviewer := pipeline.NewPipelineAdapter(cfg, mcpClient, primaryLLM, promptLoader)
-	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, nil, taskTracker)
+	prProcessor, err := processor.NewPRProcessor(cfg, prReviewer, mcpClient, nil, taskTracker)
+	if err != nil {
+		t.Fatalf("failed to create PR processor: %v", err)
+	}
 
 	// Initialize Backup Handler
 	var backupHandler func(context.Context, *domain.ReviewRequest, int) error

@@ -119,7 +119,11 @@ func main() {
 
 	// Initialize PR processor
 	// Note: PRProcessor now uses domain types and generic Reviewer interface
-	prProcessor := processor.NewPRProcessor(cfg, prReviewer, mcpClient, store, taskTracker)
+	prProcessor, err := processor.NewPRProcessor(cfg, prReviewer, mcpClient, store, taskTracker)
+	if err != nil {
+		slog.Error("create pr processor failed", "error", err)
+		os.Exit(1)
+	}
 
 	// Initialize Payload Parser with filter
 	// Need to ensure payloadParser uses generic promptLoader or pipeline one

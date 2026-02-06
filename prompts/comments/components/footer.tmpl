@@ -1,0 +1,8 @@
+{{- /* Unified footer */ -}}
+
+---
+{{ if .ShowConfidence }}
+*Conf: {{ .Confidence | printf "%.0f" }}% | {{ .Model }}*
+{{ else }}
+*{{ .Model }}*
+{{ end }}
