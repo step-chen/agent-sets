@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"unsafe"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_cpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
@@ -67,16 +66,16 @@ func NewContextEngine() *ContextEngine {
 			},
 		},
 		grammars: map[string]*sitter.Language{
-			".go":   sitter.NewLanguage(unsafe.Pointer(tree_sitter_go.Language())),
-			".cpp":  sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
-			".cc":   sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
-			".cxx":  sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
-			".c":    sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
-			".h":    sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
-			".hpp":  sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
-			".hxx":  sitter.NewLanguage(unsafe.Pointer(tree_sitter_cpp.Language())),
-			".py":   sitter.NewLanguage(unsafe.Pointer(tree_sitter_python.Language())),
-			".java": sitter.NewLanguage(unsafe.Pointer(tree_sitter_java.Language())),
+			".go":   sitter.NewLanguage(tree_sitter_go.Language()),
+			".cpp":  sitter.NewLanguage(tree_sitter_cpp.Language()),
+			".cc":   sitter.NewLanguage(tree_sitter_cpp.Language()),
+			".cxx":  sitter.NewLanguage(tree_sitter_cpp.Language()),
+			".c":    sitter.NewLanguage(tree_sitter_cpp.Language()),
+			".h":    sitter.NewLanguage(tree_sitter_cpp.Language()),
+			".hpp":  sitter.NewLanguage(tree_sitter_cpp.Language()),
+			".hxx":  sitter.NewLanguage(tree_sitter_cpp.Language()),
+			".py":   sitter.NewLanguage(tree_sitter_python.Language()),
+			".java": sitter.NewLanguage(tree_sitter_java.Language()),
 		},
 	}
 }
@@ -100,10 +99,21 @@ func (e *ContextEngine) Analyze(ctx context.Context, path string, source []byte)
 	parser := e.parserPool.Get().(*sitter.Parser)
 	defer e.parserPool.Put(parser)
 
-	parser.SetLanguage(lang)
+	if err := parser.SetLanguage(lang); err != nil {
+		return nil, fmt.Errorf("incompatible language ABI: %w", err)
+	}
 
 	// Parse
-	tree := parser.ParseCtx(ctx, source, nil)
+	tree := parser.ParseWithOptions(func(i int, _ sitter.Point) []byte {
+		if i < len(source) {
+			return source[i:]
+		}
+		return nil
+	}, nil, &sitter.ParseOptions{
+		ProgressCallback: func(_ sitter.ParseState) bool {
+			return ctx.Err() != nil
+		},
+	})
 	if tree == nil {
 		return nil, fmt.Errorf("tree-sitter parse failed")
 	}
