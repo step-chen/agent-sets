@@ -162,7 +162,7 @@ func (p *DiffPreprocessor) processFile(fileDiff string) string {
 	// Flush remaining delete buffer
 	if len(deleteBuffer) > 0 {
 		if len(deleteBuffer) > p.opts.FoldDeletesOver {
-			result = append(result, "- [... "+formatInt(len(deleteBuffer))+" lines deleted ...]")
+			result = append(result, "- [... "+strconv.Itoa(len(deleteBuffer))+" lines deleted ...]")
 		} else {
 			result = append(result, deleteBuffer...)
 		}
@@ -213,54 +213,81 @@ func (p *DiffPreprocessor) isPureWhitespaceChange(fileDiff string) bool {
 	return !hasNonWhitespaceChange
 }
 
-// ExtractFilePath extracts the file path from a diff header
+// ExtractFilePath extracts the file path from a diff header using a state-machine approach.
+// It prioritizes specific git headers (+++, rename to) over the generic diff command.
 func (p *DiffPreprocessor) ExtractFilePath(fileDiff string) string {
-	// Match both standard a/b paths and custom prefixes like src:// dst://
-	// Patterns:
-	// diff --git a/path b/path
-	// diff --git src://path dst://path
-	// --- a/path
-	// +++ b/path
+	var fallback string
 
-	// Try standard git diff first
-	pattern := regexp.MustCompile(`diff --git\s+\S+\s+(?:b/|dst://|)(\S+)`)
-	match := pattern.FindStringSubmatch(fileDiff)
-	if len(match) > 1 {
-		return match[1]
+	// Only scan the header section (limit to 15 lines)
+	// This avoids scanning massive files but covers all standard git headers
+	headerLines := strings.SplitN(fileDiff, "\n", 15)
+
+	for _, line := range headerLines {
+		// Stop at hunk header or binary marker
+		if strings.HasPrefix(line, "@@ ") || strings.HasPrefix(line, "Binary files ") {
+			break
+		}
+
+		// 1. Priority: +++ line (Target Path)
+		// Format: +++ b/path/to/file.go
+		if strings.HasPrefix(line, "+++ ") {
+			// Extract path after "+++ " prefix
+			if path := extractPath(line[4:]); path != "/dev/null" {
+				return path
+			}
+			continue
+		}
+
+		// 2. Priority: Rename/Copy (Target Path)
+		// Format: rename to path/to/file.go
+		if strings.HasPrefix(line, "rename to ") {
+			return extractPath(line[10:])
+		}
+		if strings.HasPrefix(line, "copy to ") {
+			return extractPath(line[8:])
+		}
+
+		// 3. Fallback: diff --git line
+		// Format: diff --git a/src b/dst
+		if fallback == "" && strings.HasPrefix(line, "diff --git ") {
+			fallback = extractDstPath(line)
+		}
 	}
 
-	// Try ---/+++ headers
-	pattern = regexp.MustCompile(`(?m)^\+\+\+\s+(?:b/|dst://|)(\S+)`)
-	match = pattern.FindStringSubmatch(fileDiff)
-	if len(match) > 1 {
-		return match[1]
+	if fallback != "" {
+		return fallback
 	}
 
 	return "unknown"
 }
 
-// formatInt converts int to string (avoids importing strconv for simple case)
-func formatInt(n int) string {
-	if n == 0 {
-		return "0"
+// extractPath cleans path prefixes (b/, dst://, a/, src://) and unquotes if necessary
+func extractPath(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "\"")
+	for _, prefix := range []string{"b/", "a/", "dst://", "src://"} {
+		s = strings.TrimPrefix(s, prefix)
+	}
+	return s
+}
+
+// extractDstPath extracts destination path from "diff --git a/x b/y"
+func extractDstPath(line string) string {
+	// Quoted paths: diff --git "a/x" "b/y"
+	// Find the separator between two quoted strings
+	if i := strings.LastIndex(line, "\" \""); i > 0 {
+		return extractPath(line[i+3:])
 	}
 
-	var result []byte
-	negative := n < 0
-	if negative {
-		n = -n
+	// Unquoted paths: diff --git a/x b/y
+	// Git allows spaces in unquoted paths only if they are escaped, but usually quotes them.
+	// Standard git diff output for unquoted paths doesn't have spaces.
+	// We take the last field as destination.
+	parts := strings.Fields(line)
+	if len(parts) >= 4 {
+		return extractPath(parts[len(parts)-1])
 	}
-
-	for n > 0 {
-		result = append([]byte{byte('0' + n%10)}, result...)
-		n /= 10
-	}
-
-	if negative {
-		result = append([]byte{'-'}, result...)
-	}
-
-	return string(result)
+	return ""
 }
 
 // compressSpaces compresses consecutive spaces/tabs to single space

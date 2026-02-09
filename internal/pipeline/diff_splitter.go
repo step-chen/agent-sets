@@ -69,26 +69,27 @@ func (s *DiffSplitter) Split(fullDiff string) []DiffChunk {
 
 // ParseFiles extracts individual file diffs from a unified diff
 func (s *DiffSplitter) ParseFiles(fullDiff string) []FileDiff {
-	// Match diff headers: "diff --git a/path b/path" or "diff --git src://trunk/path dst://trunk/path"
-	// Captures destination path (second path in the header)
-	diffPattern := regexp.MustCompile(`(?m)^diff --git\s+\S+\s+(\S+?)(?:\s|$)`)
-	matches := diffPattern.FindAllStringSubmatchIndex(fullDiff, -1)
+	// Match diff headers: "diff --git" to split files
+	diffPattern := regexp.MustCompile(`(?m)^diff --git\s+`)
+	indices := diffPattern.FindAllStringIndex(fullDiff, -1)
 
-	if len(matches) == 0 {
+	if len(indices) == 0 {
 		// Fallback: try simpler pattern
 		return s.parseSimpleDiff(fullDiff)
 	}
 
 	var files []FileDiff
-	for i, match := range matches {
+	preprocessor := NewDiffPreprocessor(PreprocessOptions{})
+
+	for i, match := range indices {
 		start := match[0]
 		end := len(fullDiff)
-		if i+1 < len(matches) {
-			end = matches[i+1][0]
+		if i+1 < len(indices) {
+			end = indices[i+1][0]
 		}
 
 		content := fullDiff[start:end]
-		path := fullDiff[match[2]:match[3]] // First capture group (b/path)
+		path := preprocessor.ExtractFilePath(content)
 		path = domain.NormalizePath(path)
 
 		files = append(files, FileDiff{
