@@ -184,7 +184,7 @@ func (p *PayloadParser) askLLMToExtract(ctx context.Context, body []byte) (*doma
 		respText, err := p.llm.SimpleTextQuery(ctx, sysPrompt, truncated)
 		if err == nil {
 			// Clean up response (sometimes LLMs include markdown blocks)
-			respText = pipeline.CleanJSONFromMarkdown(respText)
+			respText = pipeline.ExtractJSON(respText)
 
 			var pr domain.PullRequest
 			if err := json.Unmarshal([]byte(respText), &pr); err != nil {

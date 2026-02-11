@@ -149,14 +149,6 @@ func (s *Stage3) reviewCore(ctx context.Context, req ReviewRequest, changes []Fi
 
 	slog.Info("Stage 3: Completed", "score", result.Score, "comments_generated", len(result.Comments))
 
-	// Pipeline merge logic removed in favor of processor-level merging
-	// merger := NewCommentMerger(s.cfg.CommentMerge)
-	// mergedComments, summaryAppendix := merger.Merge(result.Comments)
-	// result.Comments = mergedComments
-	// if summaryAppendix != "" {
-	// 	result.Summary += summaryAppendix
-	// }
-
 	return result, nil
 }
 
@@ -165,7 +157,7 @@ func parseReviewResult(responseStr string) (*domain.ReviewResult, error) {
 	// but we still need to handle potential format issues or partial failures cautiously.
 	// For now, we stick to direct unmarshal as the schema ensures structure.
 
-	jsonStr := CleanJSONFromMarkdown(responseStr)
+	jsonStr := ExtractJSON(responseStr)
 	var result domain.ReviewResult
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		return nil, err
@@ -187,19 +179,42 @@ func (s *Stage3) getResultFormat() string {
 	return ""
 }
 
-// CleanJSONFromMarkdown removes markdown code block markers if present.
-// This is used to extract raw JSON from LLM responses that may be wrapped in code blocks.
-func CleanJSONFromMarkdown(s string) string {
+// ExtractJSON robustly extracts JSON from LLM response strings.
+// It handles:
+// 1. <think>...</think> blocks (reasoning/thinking process)
+// 2. Markdown code blocks (```json ... ```)
+// 3. Extra text before/after JSON (brace matching)
+func ExtractJSON(s string) string {
 	s = strings.TrimSpace(s)
-	// Handle ```json ... ``` or just ``` ... ```
+
+	// 1. Strip <think>...</think> blocks (qwen3 thinking mode)
+	if idx := strings.Index(s, "</think>"); idx != -1 {
+		// Remove everything up to and including </think>
+		s = strings.TrimSpace(s[idx+len("</think>"):])
+	}
+
+	// 2. Strip markdown code block markers
 	if strings.HasPrefix(s, "```json") {
 		s = strings.TrimPrefix(s, "```json")
 		s = strings.TrimSuffix(s, "```")
+		s = strings.TrimSpace(s)
 	} else if strings.HasPrefix(s, "```") {
 		s = strings.TrimPrefix(s, "```")
 		s = strings.TrimSuffix(s, "```")
+		s = strings.TrimSpace(s)
 	}
-	return strings.TrimSpace(s)
+
+	// 3. Brace-matching extraction: find outermost { ... }
+	start := strings.IndexByte(s, '{')
+	if start == -1 {
+		return s
+	}
+	end := strings.LastIndexByte(s, '}')
+	if end == -1 || end <= start {
+		return s
+	}
+
+	return s[start : end+1]
 }
 
 // ----------------------------------------------------------------------------
