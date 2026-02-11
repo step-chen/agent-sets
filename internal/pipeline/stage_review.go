@@ -159,8 +159,21 @@ func parseReviewResult(responseStr string) (*domain.ReviewResult, error) {
 
 	jsonStr := ExtractJSON(responseStr)
 	var result domain.ReviewResult
+
+	// 1. First attempt: Direct unmarshal
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		return nil, err
+		// 2. If failed, attempt repair
+		slog.Warn("JSON parsing failed, attempting repair", "error", err)
+
+		repairedJSON := RepairJSON(jsonStr)
+
+		// 3. Second attempt: Unmarshal repaired JSON
+		if errRepaired := json.Unmarshal([]byte(repairedJSON), &result); errRepaired != nil {
+			// If still failed, return error
+			return nil, fmt.Errorf("parse failed: %w; repair failed: %v", err, errRepaired)
+		}
+
+		slog.Info("JSON successfully repaired")
 	}
 
 	// Defaulting logic is technically not needed if Schema enforced required fields,
